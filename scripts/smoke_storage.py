@@ -55,6 +55,7 @@ def start_app(
             ),
             "LURKNOTES_TEST_DUMP": str(dump),
             "LURKNOTES_TEST_CONTROL": "1",
+            "LURKNOTES_TEST_PIN_DECK": "1",
         }
     )
     if type_text is not None:

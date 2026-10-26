@@ -27,6 +27,9 @@ Ctrl+Backspace, and the All Notes window. Drag reorder belongs to ticket 06.
 ``LURKNOTES_TEST_OPEN_ALL``
     Open All Notes once the deck is mapped. Ticket 09 will replace this with
     ``lurknotes all``; until then it lets the All Notes smoke test run.
+``LURKNOTES_TEST_PIN_DECK``
+    Do not collapse the fan when the pointer leaves. Smokes for other tickets
+    pin the deck so an unrelated pointer warp cannot hide the panel mid-test.
 ``LURKNOTES_TEST_UNDO_MS``
     Shorten the 10 s undo window. Production always uses 10 000 ms.
 """
@@ -257,6 +260,7 @@ class LurkNotesApp(Gtk.Application):
         self._test_type = os.environ.get("LURKNOTES_TEST_TYPE")
         self._test_typed = False
         self._test_open_all = os.environ.get("LURKNOTES_TEST_OPEN_ALL") == "1"
+        self._pin_deck = os.environ.get("LURKNOTES_TEST_PIN_DECK") == "1"
 
     @property
     def state(self) -> str:
@@ -585,7 +589,8 @@ class LurkNotesApp(Gtk.Application):
         self.deck.hover_enter()
 
     def _on_deck_leave(self) -> None:
-        self.deck.hover_leave()
+        if not self._pin_deck:
+            self.deck.hover_leave()
 
     def _on_tab_enter(self, note_id: str) -> None:
         self.deck.hover_tab(note_id)

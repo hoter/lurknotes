@@ -349,6 +349,7 @@ def _start_app(data_home: Path, dump: Path, type_text: str | None) -> subprocess
             "LURKNOTES_APP_ID": _app_id(),
             "LURKNOTES_TEST_DUMP": str(dump),
             "LURKNOTES_TEST_CONTROL": "1",
+            "LURKNOTES_TEST_PIN_DECK": "1",
         }
     )
     if type_text is not None:
@@ -983,8 +984,28 @@ def _click_new_note(
         lambda value: value.get("state") == "fan"
         and value.get("new_button_center") is not None,
     )
-    _click_center(xtest, panel, snapshot["new_button_center"], "the + button")
-    return snapshot
+    for attempt in range(1, 5):
+        try:
+            _click_center(
+                xtest, panel, snapshot["new_button_center"], "the + button"
+            )
+        except SmokeFailure as exc:
+            print(f"smoke-note: + click attempt {attempt} was blocked ({exc})")
+            time.sleep(0.4)
+            continue
+        try:
+            return _wait_dump(
+                dump,
+                process,
+                lambda value: value.get("state") == "open"
+                and value.get("current_id") is not None
+                and (value.get("ids") or [None])[0] == value.get("current_id")
+                and value.get("text") == "",
+                timeout=2.0,
+            )
+        except SmokeFailure:
+            print(f"smoke-note: + click attempt {attempt} did not open a new note")
+    raise SmokeFailure("the + button never opened a new note")
 
 
 def _click_rail_note(
