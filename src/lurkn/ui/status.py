@@ -84,6 +84,16 @@ class StatusBanner(Gtk.Box):
 
     def snapshot(self) -> dict:
         """Test hook for ``LURKNOTES_TEST_DUMP``."""
+        action_center = None
+        if self.action_button.get_visible():
+            root = self.get_root()
+            if root is not None:
+                found, bounds = self.action_button.compute_bounds(root)
+                if found:
+                    action_center = [
+                        bounds.get_x() + bounds.get_width() / 2,
+                        bounds.get_y() + bounds.get_height() / 2,
+                    ]
         return {
             "visible": self.get_visible(),
             "kind": self._kind,
@@ -94,6 +104,7 @@ class StatusBanner(Gtk.Box):
                 if self.action_button.get_visible()
                 else ""
             ),
+            "action_center": action_center,
             "dismissible": self.close_button.get_visible(),
         }
 

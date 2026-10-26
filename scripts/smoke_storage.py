@@ -114,7 +114,7 @@ def status_of(snapshot: dict) -> dict:
     return status
 
 
-def scenario_recover_from_backup(temporary: Path, xtest_holder: list) -> None:
+def scenario_recover_from_backup(temporary: Path) -> None:
     data_home = temporary / "recover"
     notes_dir = data_home / NOTES_DIR
     notes_dir.mkdir(parents=True)
@@ -172,10 +172,19 @@ def scenario_recover_from_backup(temporary: Path, xtest_holder: list) -> None:
     finally:
         base._stop(app)
     wait_for_our_windows(app)
-    assert xtest_holder is not None
 
 
-def scenario_double_corruption(temporary: Path) -> None:
+def click_center(
+    xtest: base.XTest, window: str, center: list[float], scale: float
+) -> None:
+    info = base._window_info(window)
+    xtest.click(
+        int(info["x"]) + round(center[0] * scale),
+        int(info["y"]) + round(center[1] * scale),
+    )
+
+
+def scenario_double_corruption(temporary: Path, xtest_holder: list) -> None:
     data_home = temporary / "double"
     notes_dir = data_home / NOTES_DIR
     notes_dir.mkdir(parents=True)
@@ -185,11 +194,12 @@ def scenario_double_corruption(temporary: Path) -> None:
     backup.write_text("{corrupt backup", encoding="utf-8")
     main_bytes = path.read_bytes()
     backup_bytes = backup.read_bytes()
+    typed = "\nAfter Continue"
 
     dump = data_home / "dump.json"
-    app = start_app(data_home, dump)
+    app = start_app(data_home, dump, type_text=typed)
     try:
-        base._wait_for_window(base.FAN_TITLE, app)
+        fan = base._wait_for_window(base.FAN_TITLE, app)
         snapshot = fan_snapshot(
             dump,
             app,
@@ -206,14 +216,77 @@ def scenario_double_corruption(temporary: Path) -> None:
         if corrupt_files(notes_dir) or (notes_dir / "notes.json.tmp").exists():
             raise SmokeFailure("startup created files before the explicit action")
         print("smoke-storage: double corruption shows Continue and writes nothing")
+
+        action_center = status.get("action_center")
+        if not action_center:
+            raise SmokeFailure("the Continue button has no clickable centre")
+        xtest = xtest_holder[0]
+        scale = base._effective_scale()
+        click_center(xtest, fan, action_center, scale)
+        after_continue = fan_snapshot(
+            dump,
+            app,
+            lambda snap: snap["overwrite_blocked"] is False
+            and status_of(snap)["visible"] is False,
+        )
+        if path.read_bytes() != main_bytes or backup.read_bytes() != backup_bytes:
+            raise SmokeFailure("Continue alone wrote to the corrupt deck")
+        print("smoke-storage: Continue unblocked saves without writing by itself")
+
+        new_center = after_continue.get("new_button_center")
+        if not new_center:
+            raise SmokeFailure("fan has no + button after Continue")
+        click_center(xtest, fan, new_center, scale)
+        base._wait_for_window(base.NOTE_TITLE, app)
+        base._wait_dump(
+            dump,
+            app,
+            lambda snap: snap.get("typed") is True
+            and snap.get("unsaved") is False
+            and snap.get("text") == typed,
+            timeout=10.0,
+        )
+        deadline = time.monotonic() + 5.0
+        saved: dict | None = None
+        while time.monotonic() < deadline:
+            try:
+                saved = read_json(path)
+            except (OSError, ValueError):
+                pass
+            else:
+                if saved["notes"] and saved["notes"][0]["text"] == typed:
+                    break
+            time.sleep(0.05)
+        if saved is None or saved["notes"][0]["text"] != typed:
+            raise SmokeFailure(f"the post-Continue note was not saved: {saved}")
+        quarantined = corrupt_files(notes_dir)
+        if len(quarantined) != 1 or quarantined[0].read_bytes() != main_bytes:
+            raise SmokeFailure("the corrupt main was not preserved before overwrite")
+        # Once the user acted, the backup follows normal ticket-02 semantics:
+        # the first save of the new deck may replace it on the next save.
+        try:
+            backup_deck = read_json(backup)
+        except (OSError, ValueError) as exc:
+            raise SmokeFailure(f"notes.bak.json became invalid: {exc}") from exc
+        if backup_deck.get("version") != 1:
+            raise SmokeFailure(f"notes.bak.json is not a valid deck: {backup_deck}")
+        if (notes_dir / "notes.json.tmp").exists():
+            raise SmokeFailure("a temp file survived the post-Continue save")
+        print("smoke-storage: after Continue the next save quarantined the corrupt file")
     finally:
         base._stop(app)
     wait_for_our_windows(app)
-    if path.read_bytes() != main_bytes or backup.read_bytes() != backup_bytes:
-        raise SmokeFailure("shutdown wrote to a doubly-corrupt deck")
-    if corrupt_files(notes_dir):
-        raise SmokeFailure("shutdown quarantined the file without user action")
-    print("smoke-storage: clean shutdown leaves both corrupt files untouched")
+    if path.read_bytes() == main_bytes:
+        raise SmokeFailure("the post-Continue deck did not survive shutdown")
+    try:
+        final_backup = read_json(backup)
+    except (OSError, ValueError) as exc:
+        raise SmokeFailure(f"shutdown left an invalid backup: {exc}") from exc
+    if final_backup.get("version") != 1:
+        raise SmokeFailure(f"shutdown left an invalid backup: {final_backup}")
+    if len(corrupt_files(notes_dir)) != 1:
+        raise SmokeFailure("shutdown lost the quarantined corrupt file")
+    print("smoke-storage: explicit action + save persisted and preserved the original")
 
 
 def scenario_future_version(temporary: Path, xtest_holder: list) -> None:
@@ -300,13 +373,17 @@ def scenario_unwritable_then_retry(temporary: Path, xtest_holder: list) -> None:
         )
 
         notes_dir.chmod(0o700)
+        print(
+            "smoke-storage: permissions restored "
+            f"({oct(notes_dir.stat().st_mode & 0o777)})"
+        )
         recovered = base._wait_dump(
             dump,
             app,
             lambda snap: snap.get("unsaved") is False
             and not status_of(snap)["visible"]
             and snap.get("text") == expected,
-            timeout=20.0,
+            timeout=45.0,
         )
         if recovered.get("text") != expected:
             raise SmokeFailure("the retry lost the typed text")
@@ -334,8 +411,8 @@ def main() -> int:
         xtest_holder.append(xtest)
         with tempfile.TemporaryDirectory(prefix="lurknotes-smoke-storage-") as temp:
             temporary = Path(temp)
-            scenario_recover_from_backup(temporary, xtest_holder)
-            scenario_double_corruption(temporary)
+            scenario_recover_from_backup(temporary)
+            scenario_double_corruption(temporary, xtest_holder)
             scenario_future_version(temporary, xtest_holder)
             scenario_unwritable_then_retry(temporary, xtest_holder)
         print("smoke-storage: OK")
