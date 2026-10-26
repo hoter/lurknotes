@@ -392,6 +392,10 @@ class LurkNotesApp(Gtk.Application):
 
     def new_note(self) -> None:
         """Create a note at the top of the deck and open it (spec §4.1)."""
+        if self.read_only or self.overwrite_blocked:
+            # Read-only and unconfirmed-corrupt files cannot accept new notes:
+            # anything created now could never be saved.
+            return
         self._leave_current()
         note = Note.create()
         add_at_top(self.notes, note)
