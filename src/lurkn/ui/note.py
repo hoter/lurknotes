@@ -81,7 +81,7 @@ class NotePage(Gtk.Box):
             button = Gtk.Button()
             if note.id == active_id:
                 button.add_css_class("active")
-            label = Gtk.Label(label=note.title() or strings.UNTITLED)
+            label = Gtk.Label(label=note.title())
             label.set_xalign(0)
             label.set_ellipsize(Pango.EllipsizeMode.END)
             button.set_child(label)
@@ -94,12 +94,16 @@ class NotePage(Gtk.Box):
         self._loading = True
         try:
             self.buffer.set_text(note.text)
-            self.buffer.place_cursor(self.buffer.get_end_iter())
-            # Spec §8: an existing note opens with the caret at the end. A
-            # plain place_cursor leaves a long note scrolled to the top.
-            self.text_view.scroll_to_mark(
-                self.buffer.get_insert(), 0.0, False, 0.0, 0.0
-            )
+            if note.text:
+                # Spec §8: an existing note opens with the caret at the end. A
+                # plain place_cursor leaves a long note scrolled to the top.
+                self.buffer.place_cursor(self.buffer.get_end_iter())
+                self.text_view.scroll_to_mark(
+                    self.buffer.get_insert(), 0.0, False, 0.0, 0.0
+                )
+            else:
+                # Spec §8: a new note opens with the caret in the empty field.
+                self.buffer.place_cursor(self.buffer.get_start_iter())
         finally:
             self._loading = False
 
@@ -117,11 +121,28 @@ class NotePage(Gtk.Box):
     def rail_width(self) -> int:
         return self.rail.get_width()
 
+    def rail_centers(self) -> list[list[float]]:
+        """Note-tab centres in panel coordinates; used by the smoke test."""
+        centers: list[list[float]] = []
+        child = self.rail_rows.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Button):
+                found, bounds = child.compute_bounds(self)
+                if found:
+                    centers.append(
+                        [
+                            bounds.get_x() + bounds.get_width() / 2,
+                            bounds.get_y() + bounds.get_height() / 2,
+                        ]
+                    )
+            child = child.get_next_sibling()
+        return centers
+
+    def cursor_offset(self) -> int:
+        return self.buffer.get_iter_at_mark(self.buffer.get_insert()).get_offset()
+
     def cursor_at_end(self) -> bool:
-        cursor = self.buffer.get_iter_at_mark(
-            self.buffer.get_insert()
-        ).get_offset()
-        return cursor == self.buffer.get_char_count()
+        return self.cursor_offset() == self.buffer.get_char_count()
 
     def focus_editor(self) -> None:
         self.text_view.grab_focus()
