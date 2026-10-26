@@ -85,6 +85,7 @@ class _WMHints(ctypes.Structure):
 
 _CLIENT_MESSAGE = 33
 _XA_CARDINAL = 6
+_XA_WINDOW = 33
 _INPUT_HINT = 1
 _SUBSTRUCTURE_NOTIFY = 1 << 20
 _SUBSTRUCTURE_REDIRECT = 1 << 19
@@ -172,6 +173,23 @@ class X11:
         ]
         lib.XDeleteProperty.restype = ctypes.c_int
         lib.XDeleteProperty.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong]
+        lib.XGetWindowProperty.restype = ctypes.c_int
+        lib.XGetWindowProperty.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_long,
+            ctypes.c_long,
+            ctypes.c_int,
+            ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        lib.XFree.restype = ctypes.c_int
+        lib.XFree.argtypes = [ctypes.c_void_p]
         lib.XCloseDisplay.restype = ctypes.c_int
         lib.XCloseDisplay.argtypes = [ctypes.c_void_p]
 
@@ -264,6 +282,44 @@ class X11:
         """Drop the user-time hint so ``present()`` may activate the window."""
         self._lib.XDeleteProperty(self._display, xid, self.atom("_NET_WM_USER_TIME"))
         self.flush()
+
+    def active_window(self) -> int | None:
+        """The root ``_NET_ACTIVE_WINDOW``, or None.
+
+        ``Gtk.Window.is_active()`` keeps reporting True after unmap (PLATFORM
+        §4), so the focus check after ``present()`` and the Esc rule for the
+        fan must read the authoritative root property instead.
+        """
+        actual_type = ctypes.c_ulong()
+        actual_format = ctypes.c_int()
+        nitems = ctypes.c_ulong()
+        bytes_after = ctypes.c_ulong()
+        data = ctypes.c_void_p()
+        status = self._lib.XGetWindowProperty(
+            self._display,
+            self._root,
+            self.atom("_NET_ACTIVE_WINDOW"),
+            0,
+            1,
+            0,
+            _XA_WINDOW,
+            ctypes.byref(actual_type),
+            ctypes.byref(actual_format),
+            ctypes.byref(nitems),
+            ctypes.byref(bytes_after),
+            ctypes.byref(data),
+        )
+        if status != 0 or not data.value or nitems.value < 1:
+            if data.value:
+                self._lib.XFree(data)
+            return None
+        try:
+            return ctypes.cast(data, ctypes.POINTER(ctypes.c_ulong))[0]
+        finally:
+            self._lib.XFree(data)
+
+    def has_focus(self, xid: int) -> bool:
+        return self.active_window() == xid
 
     def pointer(self) -> tuple[int, int] | None:
         """Return the pointer position in root (physical X11) coordinates."""

@@ -27,6 +27,10 @@ class PanelWindow(Gtk.Window):
         on_cycle: Callable[[int], None],
         on_escape: Callable[[], bool],
         on_changed: Callable[[], None],
+        on_collapse: Callable[[], None],
+        on_hover_tab: Callable[[str], None],
+        on_leave_tab: Callable[[str], None],
+        on_scrolled: Callable[[], None],
     ) -> None:
         super().__init__(application=application, title=strings.FAN_TITLE)
         self.on_escape = on_escape
@@ -37,7 +41,14 @@ class PanelWindow(Gtk.Window):
         self.add_css_class("lurk")
         self.add_css_class("panel")
 
-        self.fan = FanPage(on_open, on_new)
+        self.fan = FanPage(
+            on_open,
+            on_new,
+            on_collapse,
+            on_hover_tab,
+            on_leave_tab,
+            on_scrolled,
+        )
         self.note = NotePage(on_close, on_open, on_changed)
 
         self.stack = Gtk.Stack()
@@ -108,6 +119,27 @@ class PanelWindow(Gtk.Window):
 
     def new_button_center(self) -> list[float] | None:
         return self.fan.new_button_center()
+
+    def collapse_button_center(self) -> list[float] | None:
+        return self.fan.collapse_button_center()
+
+    def tab_center(self, note_id: str) -> list[float] | None:
+        return self.fan.tab_center(note_id, relative_to=self)
+
+    def tab_heights(self) -> list[int]:
+        return self.fan.tab_heights()
+
+    def scroll_value(self) -> float:
+        return self.fan.scroll_value()
+
+    def scroll_by(self, delta: float) -> None:
+        self.fan.scroll_by(delta)
+
+    def activate_tab(self, note_id: str) -> None:
+        self.fan.activate_tab(note_id)
+
+    def activate_collapse(self) -> None:
+        self.fan.activate_collapse()
 
     def _on_key_pressed(self, _controller, keyval, _keycode, state) -> bool:
         if keyval == Gdk.KEY_Escape:

@@ -34,6 +34,28 @@ window.lurk {
   font-size: 0.85em;
 }
 
+.fan-header {
+  border-bottom: 1px solid #2b2b35;
+  padding-bottom: 4px;
+}
+
+window.peek-window {
+  background-color: #24242c;
+  color: #e9e9f1;
+}
+
+.peek-card {
+  background-color: #24242c;
+  border: 1px solid #3d3d4c;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.peek-line {
+  color: #a9a9b8;
+  font-size: 0.9em;
+}
+
 .empty {
   color: #6f6f7e;
   padding: 12px;
@@ -64,6 +86,10 @@ window.lurk {
 
 .lurk .tab {
   padding: 8px 10px;
+}
+
+.lurk .tab:hover {
+  background-color: #353542;
 }
 
 .lurk .tab label {
@@ -132,4 +158,42 @@ window.lurk {
 
 .lurk .status-banner button {
   padding: 2px 8px;
+}
+
+/* Scrollbars: the default light adwaita trough is a white strip on the dark
+   fan and the editor. Spec §6.5 wants every surface dark. */
+.lurk scrollbar {
+  background-color: transparent;
+  border: none;
+}
+
+.lurk scrollbar trough {
+  background-color: #17171d;
+  border-radius: 3px;
+  margin: 2px;
+}
+
+.lurk scrollbar slider {
+  background-color: #3d3d4c;
+  border: none;
+  border-radius: 3px;
+  min-width: 6px;
+  min-height: 20px;
+}
+
+.lurk scrollbar slider:hover {
+  background-color: #6f6f7e;
+}
+
+/* Tooltips are popup surfaces outside the window, so they cannot be styled
+   through the .lurk ancestor. The default tooltip is light. */
+tooltip,
+tooltip.background {
+  background-color: #3a3a46;
+  color: #e9e9f1;
+  border: 1px solid #3d3d4c;
+}
+
+tooltip label {
+  color: #e9e9f1;
 }
