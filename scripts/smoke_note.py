@@ -576,10 +576,15 @@ def _close_note_with_escape(
     process: subprocess.Popen[str],
     note_window: str,
     attempts: int = 3,
+    click_first: bool = True,
 ) -> None:
     for attempt in range(1, attempts + 1):
-        _click_editor(xtest, note_window)
-        time.sleep(0.1)
+        # When proving close-flush, try Esc on the already-focused panel
+        # before clicking: the click costs enough time for the 400 ms
+        # autosave to fire, which would hide a missing close flush.
+        if click_first or attempt > 1:
+            _click_editor(xtest, note_window)
+            time.sleep(0.1)
         xtest.press_escape()
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
@@ -769,7 +774,7 @@ def main() -> int:
                 and snapshot.get("typed") is True
                 and snapshot.get("text") == closed_text,
             )
-            _close_note_with_escape(xtest, app, restart_note)
+            _close_note_with_escape(xtest, app, restart_note, click_first=False)
             _wait_dump(
                 restart_dump,
                 app,
