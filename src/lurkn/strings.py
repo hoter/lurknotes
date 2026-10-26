@@ -5,6 +5,8 @@ FAN_TITLE = "LurkNotes — fan"
 NOTE_TITLE = "LurkNotes — note"
 
 NOTES_HEADER = "NOTES"
+NEW_NOTE = "New note (+)"
+NEW_NOTE_LABEL = "+"
 NO_NOTES = "No notes yet"
 UNTITLED = "Untitled"
 CLOSE = "×"

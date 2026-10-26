@@ -37,7 +37,13 @@ gi.require_version("GdkX11", "4.0")
 from gi.repository import Gdk, GdkX11, Gio, GLib, Gtk
 
 from . import strings
-from .notes import Note, find_note
+from .notes import (
+    Note,
+    add_at_top,
+    cycle_id,
+    discard_if_untouched,
+    find_note,
+)
 from .store import Store, StoreError, UnsupportedVersion
 from .ui import install as install_theme
 from .windows.panel import WIDTH as PANEL_WIDTH
@@ -91,6 +97,10 @@ class LurkNotesApp(Gtk.Application):
         self.x11 = x11
         self.store = store or Store()
         self.notes: list[Note] = []
+        # Untouched-note deletion requires knowing which notes this process
+        # created. A loaded empty note has the same timestamps as a fresh one,
+        # so timestamps alone must never decide it (spec §5.4).
+        self.session_ids: set[str] = set()
         self.state = STATE_STRIP
         self.current_id: str | None = None
         self.save_source = 0
@@ -173,6 +183,8 @@ class LurkNotesApp(Gtk.Application):
             height=self._workarea.height,
             on_open=self.open_note,
             on_close=self.close_note,
+            on_new=self.new_note,
+            on_cycle=self.cycle_note,
             on_escape=self.on_escape,
             on_changed=self.on_text_changed,
         )
@@ -266,6 +278,17 @@ class LurkNotesApp(Gtk.Application):
 
     # -- navigation ----------------------------------------------------
 
+    def new_note(self) -> None:
+        """Create a note at the top of the deck and open it (spec §4.1)."""
+        self._leave_current()
+        note = Note.create()
+        add_at_top(self.notes, note)
+        self.session_ids.add(note.id)
+        # Ordering is the array, so a crash before typing must not lose the
+        # new note's place at the top.
+        self._save_notes()
+        self.open_note(note.id)
+
     def open_note(self, note_id: str) -> None:
         note = find_note(self.notes, note_id)
         if note is None:
@@ -274,8 +297,9 @@ class LurkNotesApp(Gtk.Application):
             self._activate_panel()
             return
 
-        # Spec §5.2: switching notes writes the note being left.
-        self._flush_current()
+        # Spec §5.2: switching notes writes the note being left; §5.4: an
+        # untouched note from this session disappears instead of being kept.
+        self._leave_current()
         self.current_id = note.id
         self.state = STATE_OPEN
         self.panel.show_note(note, self.notes)
@@ -287,8 +311,7 @@ class LurkNotesApp(Gtk.Application):
     def close_note(self) -> None:
         if self.state != STATE_OPEN:
             return
-        self._flush_current()
-        self.current_id = None
+        self._leave_current()
         self.state = STATE_FAN
 
         xid = self._xid(self.panel) if self.panel is not None else None
@@ -298,6 +321,26 @@ class LurkNotesApp(Gtk.Application):
         if self.panel is not None:
             self.panel.show_fan(self.notes)
         self._schedule_test_dump()
+
+    def cycle_note(self, step: int) -> None:
+        """Open the note *step* places away, wrapping (spec §7.3)."""
+        target_id = cycle_id(self.notes, self.current_id, step)
+        if target_id is not None:
+            self.open_note(target_id)
+
+    def _leave_current(self) -> None:
+        """Flush and, when appropriate, drop the note being left."""
+        previous_id = self.current_id
+        if previous_id is None:
+            return
+        self._flush_current()
+        removed = discard_if_untouched(
+            self.notes, previous_id, self.session_ids
+        )
+        if removed is not None:
+            # Spec §5.4: the deletion is written at once, not debounced.
+            self._save_notes()
+        self.current_id = None
 
     def on_escape(self) -> bool:
         # Spec §7.3: Esc closes the note when the panel has focus. Collapsing
@@ -367,11 +410,21 @@ class LurkNotesApp(Gtk.Application):
         snapshot = {
             "state": state,
             "current_id": self.current_id,
-            "titles": [note.title() or strings.UNTITLED for note in self.notes],
+            "ids": [note.id for note in self.notes],
+            "titles": [note.title() for note in self.notes],
             "tab_centers": (
                 self.panel.tab_centers() if state == STATE_FAN else []
             ),
+            "new_button_center": (
+                self.panel.new_button_center() if state == STATE_FAN else None
+            ),
+            "rail_centers": (
+                self.panel.rail_centers() if is_open else []
+            ),
             "text": self.panel.note.text() if is_open else None,
+            "cursor_offset": (
+                self.panel.note.cursor_offset() if is_open else None
+            ),
             "cursor_at_end": self.panel.note.cursor_at_end() if is_open else None,
             "rail_width": self.panel.note.rail_width() if is_open else None,
             "typed": self._test_typed,

@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Prove the ticket 02 vertical slice through the real X11 UI.
+"""Prove the ticket 02–03 vertical slices through the real X11 UI.
 
 File -> fan -> real X11 click on a tab -> editor -> programmatic typing ->
 400 ms debounce -> SIGKILL -> JSON on disk -> restart -> text in the editor.
+Then the multi-note rules: + creates an open empty note at the top, the rail
+switches notes, Ctrl+Tab wraps, and a session-created untouched note vanishes
+on close or on switching away while a loaded empty note survives.
 
-The only test-only production hook is documented in ``src/lurkn/app.py``:
-``LURKNOTES_TEST_DUMP`` snapshots the deck (including tab centres) and
+The only test-only production hooks are documented in ``src/lurkn/app.py``:
+``LURKNOTES_TEST_DUMP`` snapshots the deck (including clickable centres) and
 ``LURKNOTES_TEST_TYPE`` inserts text into the open note. Everything else is
 checked from outside through xwininfo/xprop and the JSON file. Exits 0 on
 success, 1 with a clear message otherwise. Always stops the app it starts.
@@ -464,6 +467,39 @@ class XTest:
         self.xtst.XTestFakeKeyEvent(self.display, keycode, 0, 0)
         self.xlib.XFlush(self.display)
 
+    def _tap(self, keysym: int) -> None:
+        keycode = self.xlib.XKeysymToKeycode(self.display, keysym)
+        self.xtst.XTestFakeKeyEvent(self.display, keycode, 1, 0)
+        self.xlib.XFlush(self.display)
+        time.sleep(0.02)
+        self.xtst.XTestFakeKeyEvent(self.display, keycode, 0, 0)
+        self.xlib.XFlush(self.display)
+
+    def type_text(self, text: str) -> None:
+        """Type plain lower-case ASCII into the focused editor."""
+        for character in text:
+            if character == "\n":
+                self._tap(0xFF0D)
+            elif character == " ":
+                self._tap(0x20)
+            else:
+                self._tap(ord(character))
+            time.sleep(0.01)
+
+    def ctrl_tab(self, backward: bool = False) -> None:
+        control = self.xlib.XKeysymToKeycode(self.display, 0xFFE3)
+        shift = self.xlib.XKeysymToKeycode(self.display, 0xFFE1)
+        self.xtst.XTestFakeKeyEvent(self.display, control, 1, 0)
+        if backward:
+            self.xtst.XTestFakeKeyEvent(self.display, shift, 1, 0)
+        self.xlib.XFlush(self.display)
+        time.sleep(0.05)
+        self._tap(0xFF09)
+        if backward:
+            self.xtst.XTestFakeKeyEvent(self.display, shift, 0, 0)
+        self.xtst.XTestFakeKeyEvent(self.display, control, 0, 0)
+        self.xlib.XFlush(self.display)
+
     def close(self) -> None:
         if self.display:
             self.xlib.XCloseDisplay(self.display)
@@ -539,6 +575,75 @@ def _click_first_tab(xtest: XTest, panel: str, snapshot: dict) -> None:
     y = int(info["y"]) + round(centers[0][1] * scale)
     xtest.click(x, y)
     print(f"smoke-note: clicked first tab at {x},{y}")
+
+
+def _click_center(
+    xtest: XTest, window: str, center: list[float], label: str
+) -> None:
+    info = _window_info(window)
+    scale = _effective_scale()
+    x = int(info["x"]) + round(center[0] * scale)
+    y = int(info["y"]) + round(center[1] * scale)
+    xtest.click(x, y)
+    print(f"smoke-note: clicked {label} at {x},{y}")
+
+
+def _click_new_note(
+    xtest: XTest,
+    process: subprocess.Popen[str],
+    panel: str,
+    dump: Path,
+) -> dict:
+    snapshot = _wait_dump(
+        dump,
+        process,
+        lambda value: value.get("state") == "fan"
+        and value.get("new_button_center") is not None,
+    )
+    _click_center(xtest, panel, snapshot["new_button_center"], "the + button")
+    return snapshot
+
+
+def _click_rail_note(
+    xtest: XTest,
+    process: subprocess.Popen[str],
+    panel: str,
+    dump: Path,
+    note_id: str,
+) -> dict:
+    snapshot = _wait_dump(
+        dump,
+        process,
+        lambda value: value.get("state") == "open"
+        and note_id in (value.get("ids") or [])
+        and len(value.get("rail_centers") or []) == len(value.get("ids") or []),
+    )
+    index = snapshot["ids"].index(note_id)
+    _click_center(
+        xtest, panel, snapshot["rail_centers"][index], f"rail note {note_id[:8]}"
+    )
+    return snapshot
+
+
+def _wait_for_ids_on_disk(
+    path: Path, expected_ids: list[str], timeout: float = SAVE_TIMEOUT
+) -> dict:
+    deadline = time.monotonic() + timeout
+    last: dict | None = None
+    while time.monotonic() < deadline:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        else:
+            last = payload
+            if [note.get("id") for note in payload.get("notes") or []] == expected_ids:
+                return payload
+        time.sleep(0.05)
+    raise SmokeFailure(
+        f"notes.json ids never matched {expected_ids} within {timeout:.0f}s; "
+        f"last: {last}"
+    )
 
 
 def _click_until_note_open(
@@ -647,6 +752,8 @@ def main() -> int:
             notes_dir.mkdir()
             notes_path = notes_dir / "notes.json"
             first_id = "11111111-1111-4111-8111-111111111111"
+            second_id = "22222222-2222-4222-8222-222222222222"
+            loaded_empty_id = "33333333-3333-4333-8333-333333333333"
             original_text = "Groceries\nmilk\neggs"
             payload = {
                 "version": 1,
@@ -658,10 +765,18 @@ def main() -> int:
                         "updated": 100.0,
                     },
                     {
-                        "id": "22222222-2222-4222-8222-222222222222",
+                        "id": second_id,
                         "text": "Standup\nnotes",
                         "created": 101.0,
                         "updated": 101.0,
+                    },
+                    {
+                        # Empty and untouched-looking, but loaded from the
+                        # file: spec §5.4 says it must survive every close.
+                        "id": loaded_empty_id,
+                        "text": "",
+                        "created": 102.0,
+                        "updated": 102.0,
                     },
                 ],
             }
@@ -683,9 +798,9 @@ def main() -> int:
                 dump,
                 app,
                 lambda snapshot: snapshot.get("state") == "fan"
-                and len(snapshot.get("tab_centers") or []) == 2,
+                and len(snapshot.get("tab_centers") or []) == 3,
             )
-            if fan_snapshot.get("titles") != ["Groceries", "Standup"]:
+            if fan_snapshot.get("titles") != ["Groceries", "Standup", "Untitled"]:
                 raise SmokeFailure(
                     f"fan titles are {fan_snapshot.get('titles')}, expected array order"
                 )
@@ -724,6 +839,8 @@ def main() -> int:
             backup = json.loads((notes_dir / "notes.bak.json").read_text(encoding="utf-8"))
             if backup["notes"][0]["text"] != original_text:
                 raise SmokeFailure("notes.bak.json does not hold the previous file")
+            if backup["notes"][2]["id"] != loaded_empty_id:
+                raise SmokeFailure("notes.bak.json lost the loaded empty note")
             if (notes_dir / "notes.bak.json").read_bytes() != original_bytes:
                 raise SmokeFailure("notes.bak.json bytes differ from the previous file")
 
@@ -740,6 +857,10 @@ def main() -> int:
                 raise SmokeFailure("updated timestamp was not bumped")
             if after_kill["notes"][1]["text"] != "Standup\nnotes":
                 raise SmokeFailure("the second note changed unexpectedly")
+            if after_kill["notes"][2]["id"] != loaded_empty_id:
+                raise SmokeFailure("the loaded empty note was lost after SIGKILL")
+            if after_kill["notes"][2]["text"] != "":
+                raise SmokeFailure("the loaded empty note gained text")
             if (notes_dir / "notes.json.tmp").exists():
                 raise SmokeFailure("notes.json.tmp survived a successful save")
             print("smoke-note: SIGKILL after debounce left valid JSON with the text")
@@ -752,7 +873,7 @@ def main() -> int:
                 restart_dump,
                 app,
                 lambda snapshot: snapshot.get("state") == "fan"
-                and len(snapshot.get("tab_centers") or []) == 2,
+                and len(snapshot.get("tab_centers") or []) == 3,
             )
             restart_note = _click_until_note_open(xtest, app, fan, restart_fan)
             _wait_dump(
@@ -783,6 +904,233 @@ def main() -> int:
             )
             _wait_for_text_on_disk(notes_path, closed_text)
             print("smoke-note: Esc returned to the fan and flushed the pending text")
+
+            # -- ticket 03: many notes ----------------------------------
+            base_ids = [first_id, second_id, loaded_empty_id]
+
+            # '+' puts an untouched note at the top and opens it empty.
+            _click_new_note(xtest, app, restart_note, restart_dump)
+            new_top = _wait_dump(
+                restart_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("ids", [None])[0] == snapshot.get("current_id")
+                and snapshot.get("ids", [])[1:] == base_ids
+                and snapshot.get("titles", [None])[0] == "Untitled"
+                and snapshot.get("text") == ""
+                and snapshot.get("cursor_offset") == 0,
+            )
+            top_id = new_top["current_id"]
+            if top_id in base_ids:
+                raise SmokeFailure("+ reused an existing note id")
+            if new_top.get("titles") != [
+                "Untitled",
+                "Groceries",
+                "Standup",
+                "Untitled",
+            ]:
+                raise SmokeFailure(
+                    f"duplicate Untitled titles broke the list: {new_top.get('titles')}"
+                )
+            _wait_for_ids_on_disk(notes_path, [top_id, *base_ids])
+            print("smoke-note: + created an empty note at the top and opened it")
+
+            # Closing that untouched note deletes it and saves immediately.
+            _close_note_with_escape(xtest, app, restart_note)
+            after_close = _wait_dump(
+                restart_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "fan"
+                and snapshot.get("current_id") is None
+                and snapshot.get("ids") == base_ids,
+            )
+            if after_close.get("titles") != ["Groceries", "Standup", "Untitled"]:
+                raise SmokeFailure(
+                    f"untouched close left titles {after_close.get('titles')}"
+                )
+            _wait_for_ids_on_disk(notes_path, base_ids)
+            saved = json.loads(notes_path.read_text(encoding="utf-8"))
+            if loaded_empty_id not in [note["id"] for note in saved["notes"]]:
+                raise SmokeFailure("closing an untouched note dropped the loaded empty one")
+            print("smoke-note: closing the untouched note removed it; loaded empty kept")
+
+            # A rail click switches notes and deletes the untouched one left.
+            _click_new_note(xtest, app, restart_note, restart_dump)
+            rail_open = _wait_dump(
+                restart_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("ids", [None])[0] == snapshot.get("current_id")
+                and snapshot.get("ids", [])[1:] == base_ids
+                and len(snapshot.get("rail_centers") or []) == 4,
+            )
+            _wait_for_ids_on_disk(
+                notes_path, [rail_open["current_id"], *base_ids]
+            )
+            _click_rail_note(xtest, app, restart_note, restart_dump, first_id)
+            switched = _wait_dump(
+                restart_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("current_id") == first_id
+                and snapshot.get("ids") == base_ids
+                and snapshot.get("text") == closed_text
+                and snapshot.get("cursor_at_end") is True,
+            )
+            if rail_open["current_id"] in switched.get("ids", []):
+                raise SmokeFailure("switching notes kept the untouched note")
+            _wait_for_ids_on_disk(notes_path, base_ids)
+            print("smoke-note: rail click switched notes and dropped the untouched one")
+
+            # Ctrl+Tab / Ctrl+Shift+Tab cycle in array order and wrap.
+            _click_editor(xtest, restart_note)
+            time.sleep(0.1)
+            xtest.ctrl_tab()
+            _wait_dump(
+                restart_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("current_id") == second_id,
+            )
+            xtest.ctrl_tab(backward=True)
+            _wait_dump(
+                restart_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("current_id") == first_id,
+            )
+            xtest.ctrl_tab(backward=True)
+            _wait_dump(
+                restart_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("current_id") == loaded_empty_id,
+            )
+            xtest.ctrl_tab()
+            _wait_dump(
+                restart_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("current_id") == first_id,
+            )
+            print("smoke-note: Ctrl+Tab and Ctrl+Shift+Tab cycle and wrap")
+
+            # Return to the fan so the + button is visible again.
+            _close_note_with_escape(xtest, app, restart_note)
+            _wait_dump(
+                restart_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "fan"
+                and snapshot.get("current_id") is None
+                and snapshot.get("ids") == base_ids,
+            )
+
+            # A typed note stays, keeps its top position, and survives restart.
+            fresh_text = "fresh top"
+            _click_new_note(xtest, app, restart_note, restart_dump)
+            _wait_dump(
+                restart_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("ids", [None])[0] == snapshot.get("current_id")
+                and snapshot.get("text") == "",
+            )
+            fresh_id = _wait_dump(
+                restart_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("ids", [None])[0] == snapshot.get("current_id"),
+            )["current_id"]
+            xtest.type_text(fresh_text)
+            _wait_dump(
+                restart_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("current_id") == fresh_id
+                and snapshot.get("text") == fresh_text,
+            )
+            xtest.ctrl_tab()
+            _wait_dump(
+                restart_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("current_id") == first_id
+                and snapshot.get("ids") == [fresh_id, *base_ids],
+            )
+            _wait_for_ids_on_disk(notes_path, [fresh_id, *base_ids])
+            saved = json.loads(notes_path.read_text(encoding="utf-8"))
+            if saved["notes"][0]["text"] != fresh_text:
+                raise SmokeFailure("typed text in the new top note was not saved")
+            print("smoke-note: typed new note stayed at the top and was saved")
+
+            _stop(app)
+            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE))
+            final_dump = data_home / "final-dump.json"
+            app = _start_app(data_home, final_dump, None)
+            _wait_for_window(STRIP_TITLE, app)
+            final_fan = _wait_dump(
+                final_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "fan"
+                and snapshot.get("ids", [None])[0] == fresh_id,
+            )
+            if final_fan.get("titles") != [
+                "fresh top",
+                "Groceries",
+                "Standup",
+                "Untitled",
+            ]:
+                raise SmokeFailure(
+                    f"order after restart is {final_fan.get('titles')}"
+                )
+            if loaded_empty_id not in final_fan.get("ids", []):
+                raise SmokeFailure("the loaded empty note did not survive restart")
+            print("smoke-note: note order and the loaded empty note survived restart")
+
+            # Empty deck: + is the way in, and closing the last untouched
+            # note returns to a saved empty deck.
+            _stop(app)
+            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE))
+            empty_home = data_home / "empty"
+            empty_notes = empty_home / "lurknotes" / "notes.json"
+            empty_dump = data_home / "empty-dump.json"
+            app = _start_app(empty_home, empty_dump, None)
+            _wait_for_window(STRIP_TITLE, app)
+            empty_fan = _wait_dump(
+                empty_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "fan"
+                and snapshot.get("ids") == []
+                and snapshot.get("new_button_center") is not None,
+            )
+            if empty_fan.get("tab_centers") != []:
+                raise SmokeFailure("an empty deck showed tabs")
+            _click_center(
+                xtest,
+                _wait_for_window(FAN_TITLE, app),
+                empty_fan["new_button_center"],
+                "+ on the empty deck",
+            )
+            _wait_dump(
+                empty_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and len(snapshot.get("ids") or []) == 1
+                and snapshot.get("ids", [None])[0] == snapshot.get("current_id")
+                and snapshot.get("text") == ""
+                and snapshot.get("cursor_offset") == 0,
+            )
+            _close_note_with_escape(xtest, app, _wait_for_window(NOTE_TITLE, app))
+            _wait_dump(
+                empty_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "fan"
+                and snapshot.get("ids") == []
+                and snapshot.get("current_id") is None,
+            )
+            _wait_for_ids_on_disk(empty_notes, [])
+            print("smoke-note: empty deck accepted + and saved after the last note closed")
+
             print("smoke-note: OK")
             return 0
 

@@ -22,18 +22,21 @@ class PanelWindow(Gtk.Window):
         height: int,
         on_open: Callable[[str], None],
         on_close: Callable[[], None],
+        on_new: Callable[[], None],
+        on_cycle: Callable[[int], None],
         on_escape: Callable[[], bool],
         on_changed: Callable[[], None],
     ) -> None:
         super().__init__(application=application, title=strings.FAN_TITLE)
         self.on_escape = on_escape
+        self.on_cycle = on_cycle
         self.set_decorated(False)
         self.set_resizable(False)
         self.set_default_size(WIDTH, height)
         self.add_css_class("lurk")
         self.add_css_class("panel")
 
-        self.fan = FanPage(on_open)
+        self.fan = FanPage(on_open, on_new)
         self.note = NotePage(on_close, on_open, on_changed)
 
         self.stack = Gtk.Stack()
@@ -73,7 +76,25 @@ class PanelWindow(Gtk.Window):
     def tab_centers(self) -> list[list[float]]:
         return self.fan.tab_centers()
 
-    def _on_key_pressed(self, _controller, keyval, _keycode, _state) -> bool:
+    def rail_centers(self) -> list[list[float]]:
+        return self.note.rail_centers()
+
+    def new_button_center(self) -> list[float] | None:
+        return self.fan.new_button_center()
+
+    def _on_key_pressed(self, _controller, keyval, _keycode, state) -> bool:
         if keyval == Gdk.KEY_Escape:
             return self.on_escape()
+        # Spec §7.3: Ctrl+Tab / Ctrl+Shift+Tab cycle notes. GTK reports
+        # Shift+Tab as ISO_Left_Tab, so both keyvals mean "previous".
+        if state & Gdk.ModifierType.CONTROL_MASK and keyval in (
+            Gdk.KEY_Tab,
+            Gdk.KEY_KP_Tab,
+            Gdk.KEY_ISO_Left_Tab,
+        ):
+            previous = bool(state & Gdk.ModifierType.SHIFT_MASK) or (
+                keyval == Gdk.KEY_ISO_Left_Tab
+            )
+            self.on_cycle(-1 if previous else 1)
+            return True
         return False

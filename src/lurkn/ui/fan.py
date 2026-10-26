@@ -13,7 +13,9 @@ from ..notes import Note
 class FanPage(Gtk.Box):
     """Read-only list of note tabs. Clicking a tab opens its note."""
 
-    def __init__(self, on_open: Callable[[str], None]) -> None:
+    def __init__(
+        self, on_open: Callable[[str], None], on_new: Callable[[], None]
+    ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self._on_open = on_open
         self.add_css_class("fan")
@@ -26,6 +28,15 @@ class FanPage(Gtk.Box):
         title.set_hexpand(True)
         title.add_css_class("header")
         header.append(title)
+
+        # Spec §6.2: the fan header owns + and ×. Ticket 03 adds +; the
+        # collapse × comes with the hover/collapse ticket.
+        new = Gtk.Button(label=strings.NEW_NOTE_LABEL)
+        new.set_tooltip_text(strings.NEW_NOTE)
+        new.connect("clicked", lambda _button: on_new())
+        header.append(new)
+        self.new_button = new
+
         self.append(header)
 
         self.rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -50,7 +61,7 @@ class FanPage(Gtk.Box):
         for note in notes:
             button = Gtk.Button()
             button.add_css_class("tab")
-            label = Gtk.Label(label=note.title() or strings.UNTITLED)
+            label = Gtk.Label(label=note.title())
             label.set_xalign(0)
             label.set_ellipsize(Pango.EllipsizeMode.END)
             button.set_child(label)
@@ -75,3 +86,13 @@ class FanPage(Gtk.Box):
                     )
             child = child.get_next_sibling()
         return centers
+
+    def new_button_center(self) -> list[float] | None:
+        """The + button's centre in panel coordinates; used by the smoke test."""
+        found, bounds = self.new_button.compute_bounds(self)
+        if not found:
+            return None
+        return [
+            bounds.get_x() + bounds.get_width() / 2,
+            bounds.get_y() + bounds.get_height() / 2,
+        ]
