@@ -29,10 +29,25 @@ def strip_rect(workarea: Rect, scale: float, width: int) -> Rect:
     flush with its right edge. ``workarea`` and ``width`` are logical pixels;
     the result is physical pixels for ``XMoveResizeWindow``.
     """
+    return _edge_rect(workarea, scale, width, gap=0)
+
+
+def panel_rect(workarea: Rect, scale: float, width: int, strip_width: int) -> Rect:
+    """Place the fan/panel immediately left of the strip (spec §6).
+
+    Same top and height as the strip, 380 logical px wide by default, ending
+    where the strip begins.
+    """
+    return _edge_rect(workarea, scale, width, gap=strip_width)
+
+
+def _edge_rect(workarea: Rect, scale: float, width: int, gap: int) -> Rect:
+    right = round((workarea.x + workarea.width) * scale)
+    physical_width = round(width * scale)
     return Rect(
-        x=round((workarea.x + workarea.width) * scale) - round(width * scale),
+        x=right - round(gap * scale) - physical_width,
         y=round(workarea.y * scale),
-        width=round(width * scale),
+        width=physical_width,
         height=round(workarea.height * scale),
     )
 

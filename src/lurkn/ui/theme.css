@@ -1,0 +1,118 @@
+/* LurkNotes dark palette — spec §6.5. No light-theme fallbacks. */
+
+window.lurk {
+  background-color: #1c1c22;
+  color: #e9e9f1;
+}
+
+.lurk .fan,
+.lurk .note-page,
+.lurk .editor-column,
+.lurk stack {
+  background-color: #1c1c22;
+  color: #e9e9f1;
+}
+
+.lurk scrolledwindow,
+.lurk viewport {
+  background-color: transparent;
+  color: #e9e9f1;
+}
+
+.strip {
+  background-color: #24242c;
+}
+
+.header {
+  color: #e9e9f1;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.hint {
+  color: #6f6f7e;
+  font-size: 0.85em;
+}
+
+.empty {
+  color: #6f6f7e;
+  padding: 12px;
+}
+
+.lurk button {
+  background-image: none;
+  background-color: #2b2b35;
+  color: #e9e9f1;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  box-shadow: none;
+  padding: 6px 10px;
+}
+
+.lurk button:hover {
+  background-color: #353542;
+}
+
+.lurk button:active {
+  background-color: #3d3d4c;
+}
+
+.lurk button:focus {
+  border-color: #6f6f7e;
+  outline-width: 0;
+}
+
+.lurk .tab {
+  padding: 8px 10px;
+}
+
+.lurk .tab label {
+  color: #e9e9f1;
+}
+
+.lurk .rail {
+  background-color: #17171d;
+  padding: 8px 0;
+}
+
+.lurk .rail button {
+  background-color: transparent;
+  padding: 6px 8px;
+}
+
+.lurk .rail button:hover {
+  background-color: #353542;
+}
+
+.lurk .rail button.active {
+  background-color: #2b2b35;
+}
+
+.lurk .rail button.active label {
+  color: #e9e9f1;
+}
+
+.lurk .rail button label {
+  color: #a9a9b8;
+}
+
+.lurk .editor,
+.lurk .editor text {
+  background-color: #1c1c22;
+  color: #e9e9f1;
+}
+
+.lurk .editor {
+  caret-color: #e9e9f1;
+}
+
+.lurk .editor text selection {
+  background-color: #353542;
+  color: #e9e9f1;
+}
+
+.lurk .save-failed {
+  background-color: #3a3a46;
+  color: #e9e9f1;
+  padding: 4px 10px;
+}
