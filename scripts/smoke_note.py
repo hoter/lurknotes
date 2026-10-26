@@ -802,6 +802,24 @@ class XTest:
         self.xtst.XTestFakeKeyEvent(self.display, control, 0, 0)
         self.xlib.XFlush(self.display)
 
+    def chord(self, keysym: int) -> None:
+        control = self.xlib.XKeysymToKeycode(self.display, 0xFFE3)
+        key = self.xlib.XKeysymToKeycode(self.display, keysym)
+        self.xtst.XTestFakeKeyEvent(self.display, control, 1, 0)
+        self.xlib.XFlush(self.display)
+        time.sleep(0.04)
+        self.xtst.XTestFakeKeyEvent(self.display, key, 1, 0)
+        self.xtst.XTestFakeKeyEvent(self.display, key, 0, 0)
+        time.sleep(0.02)
+        self.xtst.XTestFakeKeyEvent(self.display, control, 0, 0)
+        self.xlib.XFlush(self.display)
+
+    def ctrl_backspace(self) -> None:
+        self.chord(0xFF08)
+
+    def ctrl_z(self) -> None:
+        self.chord(0x7A)
+
     def ctrl_tab(self, backward: bool = False) -> None:
         control = self.xlib.XKeysymToKeycode(self.display, 0xFFE3)
         shift = self.xlib.XKeysymToKeycode(self.display, 0xFFE1)

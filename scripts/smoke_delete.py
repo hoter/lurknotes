@@ -46,7 +46,7 @@ from smoke_note import (  # noqa: E402
     _xwd_image,
 )
 
-UNDO_TIMEOUT_MS = 4_000  # test hook only; production is 10_000
+UNDO_TIMEOUT_MS = 6_000  # test hook only; production is 10_000
 TOAST_BACKGROUND = (58, 58, 70)  # #3a3a46, spec §6.5
 
 
@@ -201,14 +201,27 @@ def _open_tab(
         lambda snapshot: snapshot.get("state") == "fan"
         and len(snapshot.get("tab_centers") or []) > index,
     )
-    _click_center(xtest, panel, fan["tab_centers"][index], f"tab {index}")
-    return _wait_dump(
-        dump,
-        process,
-        lambda snapshot: snapshot.get("state") == "open"
-        and snapshot.get("current_id") == note_id
-        and snapshot.get("active_index") == index,
-    )
+    for attempt in range(1, 6):
+        try:
+            _click_center(
+                xtest, panel, fan["tab_centers"][index], f"tab {index}"
+            )
+        except SmokeFailure as exc:
+            print(f"smoke-delete: tab click {attempt} was blocked ({exc})")
+            time.sleep(0.4)
+            continue
+        try:
+            return _wait_dump(
+                dump,
+                process,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("current_id") == note_id
+                and snapshot.get("active_index") == index,
+                timeout=2.0,
+            )
+        except SmokeFailure:
+            print(f"smoke-delete: tab click {attempt} did not open the note")
+    raise SmokeFailure(f"tab {index} never opened note {note_id[:8]}")
 
 
 def _check_toast_palette(

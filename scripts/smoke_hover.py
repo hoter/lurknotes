@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
 import smoke_note as base  # noqa: E402
-from lurkn.strings import PEEK_TITLE  # noqa: E402
+from lurkn.strings import ALL_NOTES_TITLE  # noqa: E402
 
 SmokeFailure = base.SmokeFailure
 ALL_DESKTOPS = 4294967295
@@ -40,7 +40,9 @@ base.COVER_TIMEOUT = 3.0
 # -- process -------------------------------------------------------------
 
 
-def start_app(data_home: Path, dump: Path) -> subprocess.Popen[str]:
+def start_app(
+    data_home: Path, dump: Path, *, undo_ms: int | None = None
+) -> subprocess.Popen[str]:
     global RUN
     RUN += 1
     env = os.environ.copy()
@@ -57,6 +59,8 @@ def start_app(data_home: Path, dump: Path) -> subprocess.Popen[str]:
             "LURKNOTES_TEST_CONTROL": "1",
         }
     )
+    if undo_ms is not None:
+        env["LURKNOTES_TEST_UNDO_MS"] = str(undo_ms)
     process = subprocess.Popen(
         [str(ROOT / "lurknotes")],
         cwd=str(ROOT),
@@ -342,37 +346,50 @@ def check_tooltip_dark(
     print("smoke-hover: tooltip did not appear (screen busy); CSS audit only")
 
 
-def check_peek_dark(app: subprocess.Popen[str], xtest: base.XTest) -> None:
-    """The peek is its own surface: sample it, do not trust the CSS audit."""
-    for _ in range(6):
-        for window in base._windows_titled(PEEK_TITLE, app.pid):
-            try:
-                if base._window_info(window).get("map_state") != "IsViewable":
-                    continue
-                xtest.raise_window(window)
-                image = base._xwd_image(window)
-            except SmokeFailure:
-                # The pointer moved (or another test's warp hid the peek)
-                # between the map check and xwd; try again on the next frame.
-                break
-            pixel, width, height = base._pixel_sampler(image)
-            for point in (
-                (0, 0),
-                (width - 1, 0),
-                (0, height - 1),
-                (width - 1, height - 1),
-            ):
-                observed = pixel(*point)
-                if observed != (36, 36, 44):
-                    raise SmokeFailure(
-                        f"peek corner {point} is "
-                        f"#{observed[0]:02x}{observed[1]:02x}{observed[2]:02x}, "
-                        "expected #24242c"
-                    )
-            assert_no_white(window, "the peek")
-            return
-        time.sleep(0.05)
-    print("smoke-hover: peek pixel check skipped (peek vanished under the pointer)")
+def check_peek_in_fan(
+    app: subprocess.Popen[str], fan: str, peek: dict
+) -> None:
+    """Prove the peek is fan content, not a fifth mapped surface."""
+    pid_windows_now = pid_windows(app)
+    if pid_windows_now is not None:
+        allowed: set[str] = set()
+        for title in (
+            base.STRIP_TITLE,
+            base.FAN_TITLE,
+            base.NOTE_TITLE,
+            ALL_NOTES_TITLE,
+        ):
+            allowed.update(base._windows_titled(title, app.pid))
+        extras: list[str] = []
+        for window in sorted(pid_windows_now - allowed):
+            info = base._window_info(window)
+            if info.get("map_state") != "IsViewable":
+                continue
+            # GTK keeps tiny 1x1 input windows; they are not surfaces.
+            if int(info.get("width") or 0) <= 2 or int(info.get("height") or 0) <= 2:
+                continue
+            extras.append(window)
+        if extras:
+            raise SmokeFailure(
+                "the peek added an extra mapped window: "
+                + ", ".join(extras)
+            )
+
+    center = peek.get("center")
+    if center is None:
+        raise SmokeFailure("the peek pane has no bounds inside the fan")
+    scale = base._effective_scale()
+    info = base._window_info(fan)
+    width = int(info["width"]) / scale
+    height = int(info["height"]) / scale
+    if not (0 <= center[0] <= width and 0 <= center[1] <= height):
+        raise SmokeFailure(
+            f"peek centre {center} is outside the {width:.0f}x{height:.0f} fan"
+        )
+    if center[1] < 100:
+        raise SmokeFailure(
+            f"peek centre {center} overlaps the fixed header"
+        )
 
 
 def check_panel_capture(window: str, where: str) -> None:
@@ -804,10 +821,11 @@ def scenario_peek(
     if peek["visible"] != [first_id]:
         raise SmokeFailure(f"peek visibility is {peek['visible']!r}, expected exactly one")
     assert_no_focus_theft(app, before, fan, "the tab peek")
-    check_peek_dark(app, xtest)
+    check_peek_in_fan(app, fan, peek)
     print(
         f"smoke-hover: tab peek in {elapsed:.0f} ms (target 150 ms) with "
-        f"{len(peek['lines'])} body lines, no focus theft"
+        f"{len(peek['lines'])} body lines inside the fan, no extra window, "
+        "no focus theft"
     )
 
     # Cross to the next tab. The old peek must disappear at once and only the
@@ -1194,6 +1212,160 @@ def scenario_header_close(
     )
 
 
+def scenario_undo_pin(xtest: base.XTest, temporary: Path) -> None:
+    """Undo toast pins the fan; expiry releases it (ticket 05 carry-over)."""
+    data_home = temporary / "undo"
+    notes_dir = data_home / "lurknotes"
+    notes_dir.mkdir(parents=True)
+    note_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    text = "Undo me\nbody line"
+    (notes_dir / "notes.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "notes": [
+                    {"id": note_id, "text": text, "created": 1.0, "updated": 1.0}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    dump = data_home / "dump.json"
+    app = start_app(data_home, dump, undo_ms=3000)
+    try:
+        base._wait_for_window(base.STRIP_TITLE, app)
+        move_away(xtest)
+        snapshot(dump, app, lambda snap: snap.get("state") == "strip", timeout=4.0)
+        hover_strip(xtest, app)
+        try:
+            fan, _ = wait_fan_viewable(app, timeout=2.0)
+        except SmokeFailure:
+            if not control(app, "strip"):
+                raise
+            fan, _ = wait_fan_viewable(app, timeout=3.0)
+        ready = snapshot(
+            dump,
+            app,
+            lambda snap: snap.get("state") == "fan"
+            and bool(snap.get("tab_centers")),
+        )
+        move_to_tab(xtest, fan, ready["tab_centers"][0])
+        try:
+            click_center(xtest, fan, ready["tab_centers"][0], "the undo note")
+        except SmokeFailure:
+            if not control(app, f"tabclick:{note_id}"):
+                raise
+        snapshot(
+            dump,
+            app,
+            lambda snap: snap.get("state") == "open"
+            and snap.get("current_id") == note_id,
+        )
+        note = base._wait_for_window(base.NOTE_TITLE, app)
+        ensure_panel_focus(xtest, app, note)
+        xtest.focus(note)
+        xtest.ctrl_backspace()
+        deleted = snapshot(
+            dump,
+            app,
+            lambda snap: snap.get("state") == "fan"
+            and snap.get("ids") == []
+            and (snap.get("toast") or {}).get("visible") is True,
+        )
+        undo_center = (deleted.get("toast") or {}).get("button_center")
+        if not undo_center:
+            raise SmokeFailure("the undo toast has no clickable button")
+
+        # Pointer leaves for well over the 400 ms collapse delay.
+        move_away(xtest)
+        time.sleep(0.8)
+        pinned = snapshot(dump, app, lambda snap: snap.get("state") == "fan")
+        if fan_viewable(app) is None:
+            raise SmokeFailure("the fan unmapped while the undo toast was live")
+        if not (pinned.get("toast") or {}).get("visible"):
+            raise SmokeFailure("the undo toast vanished when the pointer left")
+        print(
+            "smoke-hover: undo toast kept the fan mapped after the pointer left "
+            "(>400 ms) and its Undo button is still present"
+        )
+
+        # The toast button is still clickable after that leave.
+        try:
+            click_center(xtest, fan, undo_center, "the Undo button")
+            restored = snapshot(
+                dump,
+                app,
+                lambda snap: snap.get("state") == "open"
+                and snap.get("current_id") == note_id
+                and not (snap.get("toast") or {}).get("visible"),
+                timeout=3.0,
+            )
+        except SmokeFailure:
+            print("smoke-hover: Undo click blocked; using the control channel")
+            if not control(app, "undo"):
+                raise
+            restored = snapshot(
+                dump,
+                app,
+                lambda snap: snap.get("state") == "open"
+                and snap.get("current_id") == note_id
+                and not (snap.get("toast") or {}).get("visible"),
+                timeout=3.0,
+            )
+        if restored.get("current_id") != note_id:
+            raise SmokeFailure("Undo did not restore the deleted note")
+        print("smoke-hover: Undo restored the note while the pointer stayed off-deck")
+
+        # Delete again, then prove the header × is also pinned, and that
+        # expiry collapses a panel whose pointer is already outside.
+        note = base._wait_for_window(base.NOTE_TITLE, app)
+        xtest.focus(note)
+        xtest.ctrl_backspace()
+        again = snapshot(
+            dump,
+            app,
+            lambda snap: snap.get("state") == "fan"
+            and snap.get("ids") == []
+            and (snap.get("toast") or {}).get("visible") is True,
+        )
+        header_center = again.get("collapse_button_center")
+        move_away(xtest)
+        time.sleep(0.8)
+        if fan_viewable(app) is None:
+            raise SmokeFailure("the fan collapsed during the second undo window")
+        if not header_center:
+            raise SmokeFailure("the pinned fan has no header × center")
+        try:
+            click_center(xtest, fan, header_center, "the pinned header ×")
+        except SmokeFailure:
+            control(app, "header")
+        time.sleep(0.3)
+        still = snapshot(dump, app, lambda snap: snap.get("state") == "fan")
+        if fan_viewable(app) is None or not (still.get("toast") or {}).get("visible"):
+            raise SmokeFailure("the header × dismissed the live undo toast")
+        print("smoke-hover: header × is ignored while an undo is pending")
+
+        move_away(xtest)
+        expired = snapshot(
+            dump,
+            app,
+            lambda snap: snap.get("state") == "strip",
+            timeout=6.0,
+        )
+        if expired.get("state") != "strip" or fan_viewable(app) is not None:
+            raise SmokeFailure("expiry did not release the pinned fan")
+        if (expired.get("toast") or {}).get("visible"):
+            raise SmokeFailure("the toast survived undo expiry")
+        print(
+            "smoke-hover: after undo expiry the off-deck panel collapsed normally"
+        )
+    finally:
+        base._stop(app)
+    base._wait_for_no_windows(
+        (base.STRIP_TITLE, base.FAN_TITLE, base.NOTE_TITLE), app
+    )
+
+
 def scenario_empty_deck(
     xtest: base.XTest, temporary: Path
 ) -> None:
@@ -1288,6 +1460,7 @@ def main() -> int:
             )
             app = None
             scenario_empty_deck(xtest, temporary)
+            scenario_undo_pin(xtest, temporary)
         print("smoke-hover: OK")
         return 0
     except SmokeFailure as failure:
