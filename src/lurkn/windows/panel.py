@@ -79,6 +79,9 @@ class PanelWindow(Gtk.Window):
     def rail_centers(self) -> list[list[float]]:
         return self.note.rail_centers()
 
+    def active_index(self) -> int:
+        return self.note.active_index()
+
     def new_button_center(self) -> list[float] | None:
         return self.fan.new_button_center()
 

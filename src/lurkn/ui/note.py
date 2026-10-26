@@ -144,6 +144,22 @@ class NotePage(Gtk.Box):
             child = child.get_next_sibling()
         return centers
 
+    def active_index(self) -> int:
+        """Rail row of the highlighted tab, or -1 (spec §6.3).
+
+        Highlighting is keyed by note id, not by title, so duplicate titles
+        can never move the marker to the wrong row.
+        """
+        index = 0
+        child = self.rail_rows.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Button):
+                if child.has_css_class("active"):
+                    return index
+                index += 1
+            child = child.get_next_sibling()
+        return -1
+
     def cursor_offset(self) -> int:
         return self.buffer.get_iter_at_mark(self.buffer.get_insert()).get_offset()
 
