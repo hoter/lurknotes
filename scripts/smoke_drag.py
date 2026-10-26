@@ -68,6 +68,7 @@ def start_app(
     RUN += 1
     app_id = f"dev.lurknotes.LurkNotes.dragSmoke.s{os.getpid()}.r{RUN}"
     base._assert_app_id_free(app_id)
+    base._mark_onboarded(data_home)
     env = os.environ.copy()
     env.update(
         {
@@ -83,7 +84,7 @@ def start_app(
     if open_all:
         env["LURKNOTES_TEST_OPEN_ALL"] = "1"
     process = subprocess.Popen(
-        [str(ROOT / "lurknotes")],
+        [str(ROOT / "lurknotes"), "--autostart"],
         cwd=str(ROOT),
         env=env,
         text=True,
