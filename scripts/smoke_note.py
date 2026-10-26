@@ -561,6 +561,26 @@ def _click_editor(xtest: XTest, note_window: str) -> None:
     xtest.click(x, y)
 
 
+def _close_note_with_escape(
+    xtest: XTest,
+    process: subprocess.Popen[str],
+    note_window: str,
+    attempts: int = 3,
+) -> None:
+    for attempt in range(1, attempts + 1):
+        _click_editor(xtest, note_window)
+        time.sleep(0.1)
+        xtest.press_escape()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            _ensure_running(process)
+            if _windows_titled(FAN_TITLE):
+                return
+            time.sleep(0.05)
+        print(f"smoke-note: Esc attempt {attempt} did not return to the fan")
+    raise SmokeFailure(f"note did not close after {attempts} Esc presses")
+
+
 def _wait_for_text_on_disk(path: Path, expected: str) -> dict:
     deadline = time.monotonic() + SAVE_TIMEOUT
     last: dict | None = None
@@ -739,9 +759,7 @@ def main() -> int:
                 and snapshot.get("typed") is True
                 and snapshot.get("text") == closed_text,
             )
-            _click_editor(xtest, restart_note)
-            xtest.press_escape()
-            _wait_for_window(FAN_TITLE, app)
+            _close_note_with_escape(xtest, app, restart_note)
             _wait_dump(
                 restart_dump,
                 app,
