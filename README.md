@@ -68,6 +68,7 @@ it. Nothing is written outside `$XDG_DATA_HOME` and `~/.config`.
 /home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_delete.py
 /home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_all_notes.py
 /home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_storage.py
+/home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_drag.py
 /home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_integration.py
 ```
 
