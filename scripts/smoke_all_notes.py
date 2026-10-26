@@ -65,6 +65,7 @@ def start_app(data_home: Path, dump: Path) -> subprocess.Popen[str]:
             ),
             "LURKNOTES_TEST_DUMP": str(dump),
             "LURKNOTES_TEST_OPEN_ALL": "1",
+            "LURKNOTES_TEST_PIN_DECK": "1",
         }
     )
     return subprocess.Popen(

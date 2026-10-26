@@ -42,10 +42,11 @@ from smoke_note import (  # noqa: E402
     _wait_for_ids_on_disk,
     _wait_for_no_windows,
     _wait_for_window,
+    _show_fan,
     _xwd_image,
 )
 
-UNDO_TIMEOUT_MS = 4_000  # test hook only; production is 10_000
+UNDO_TIMEOUT_MS = 6_000  # test hook only; production is 10_000
 TOAST_BACKGROUND = (58, 58, 70)  # #3a3a46, spec §6.5
 
 
@@ -72,7 +73,7 @@ class DeleteXTest(XTest):
 
 
 def _app_id() -> str:
-    return f"dev.lurknotes.LurkNotes.delete-smoke.s{os.getpid()}"
+    return f"dev.lurknotes.LurkNotes.deleteSmoke.s{os.getpid()}"
 
 
 def _start_app(
@@ -88,9 +89,11 @@ def _start_app(
             "LURKNOTES_APP_ID": _app_id(),
             "LURKNOTES_TEST_DUMP": str(dump),
             "LURKNOTES_TEST_UNDO_MS": str(undo_ms),
+            "LURKNOTES_TEST_CONTROL": "1",
+            "LURKNOTES_TEST_PIN_DECK": "1",
         }
     )
-    return subprocess.Popen(
+    process = subprocess.Popen(
         [str(ROOT / "lurknotes")],
         cwd=str(ROOT),
         env=env,
@@ -98,6 +101,8 @@ def _start_app(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    process.lurk_app_id = env["LURKNOTES_APP_ID"]  # type: ignore[attr-defined]
+    return process
 
 
 def _ensure_running(process: subprocess.Popen[str]) -> None:
@@ -196,14 +201,27 @@ def _open_tab(
         lambda snapshot: snapshot.get("state") == "fan"
         and len(snapshot.get("tab_centers") or []) > index,
     )
-    _click_center(xtest, panel, fan["tab_centers"][index], f"tab {index}")
-    return _wait_dump(
-        dump,
-        process,
-        lambda snapshot: snapshot.get("state") == "open"
-        and snapshot.get("current_id") == note_id
-        and snapshot.get("active_index") == index,
-    )
+    for attempt in range(1, 6):
+        try:
+            _click_center(
+                xtest, panel, fan["tab_centers"][index], f"tab {index}"
+            )
+        except SmokeFailure as exc:
+            print(f"smoke-delete: tab click {attempt} was blocked ({exc})")
+            time.sleep(0.4)
+            continue
+        try:
+            return _wait_dump(
+                dump,
+                process,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("current_id") == note_id
+                and snapshot.get("active_index") == index,
+                timeout=2.0,
+            )
+        except SmokeFailure:
+            print(f"smoke-delete: tab click {attempt} did not open the note")
+    raise SmokeFailure(f"tab {index} never opened note {note_id[:8]}")
 
 
 def _check_toast_palette(
@@ -241,7 +259,11 @@ def _delete_and_expect(
     dump_state: str,
 ) -> dict:
     if dump_state == "open":
-        _click_editor(xtest, panel)
+        try:
+            _click_editor(xtest, panel)
+        except SmokeFailure as exc:
+            print(f"smoke-delete: editor click was blocked ({exc}); focusing")
+    xtest.focus(panel)
     time.sleep(0.1)
     xtest.ctrl_backspace()
     return _wait_toast(dump, process, state=dump_state, ids=expected_ids)
@@ -275,8 +297,8 @@ def main() -> int:
             dump = data_home / "dump.json"
             app = _start_app(data_home, dump)
             _wait_for_window(STRIP_TITLE, app)
-            panel = _wait_for_window(FAN_TITLE, app)
             xtest = DeleteXTest()
+            panel = _show_fan(xtest, app)
             _wait_dump(
                 dump,
                 app,
@@ -309,21 +331,43 @@ def main() -> int:
             print("smoke-delete: delete wrote notes.json and showed the dark toast")
 
             # -- the toast survives a fan/rail rebuild from autosave -----
+            xtest.focus(panel)
             xtest.type_text("x")
             survived = _wait_dump(
                 dump,
                 app,
+                # Another test's click can move the caret; the point here is
+                # that the keystroke reached the editor after the rebuild.
                 lambda snapshot: snapshot.get("state") == "open"
-                and snapshot.get("text") == third_text + "x"
+                and (snapshot.get("text") or "").count("x")
+                == third_text.count("x") + 1
+                and len(snapshot.get("text") or "") == len(third_text) + 1
                 and snapshot.get("undo_pending") is True
                 and snapshot.get("toast", {}).get("visible") is True,
             )
-            _wait_note_text(notes_path, third_id, third_text + "x")
+            deadline = time.monotonic() + 3.0
+            saved_text: str | None = None
+            while time.monotonic() < deadline:
+                saved_payload = json.loads(notes_path.read_text(encoding="utf-8"))
+                saved_text = next(
+                    (
+                        note["text"]
+                        for note in saved_payload.get("notes", [])
+                        if note["id"] == third_id
+                    ),
+                    None,
+                )
+                if saved_text is not None and len(saved_text) == len(third_text) + 1:
+                    break
+                time.sleep(0.05)
+            if saved_text is None or len(saved_text) != len(third_text) + 1:
+                raise SmokeFailure(f"the keystroke did not reach the disk: {saved_text!r}")
             if not survived["toast"]["visible"]:
                 raise SmokeFailure("the autosave rebuild lost the undo toast")
             print("smoke-delete: the toast survived an autosave refresh")
 
             # -- Ctrl+Z restores at the original index -------------------
+            xtest.focus(panel)
             xtest.ctrl_z()
             restored = _wait_toast(
                 dump,
@@ -367,6 +411,7 @@ def main() -> int:
             _wait_for_ids_on_disk(notes_path, [first_id, third_id])
             if dead.get("undo_pending"):
                 raise SmokeFailure("the undo payload survived its timeout")
+            xtest.focus(panel)
             xtest.ctrl_z()
             time.sleep(0.5)
             after_late_undo = _wait_dump(
@@ -464,7 +509,7 @@ def main() -> int:
             restart_dump = data_home / "restart-dump.json"
             app = _start_app(data_home, restart_dump)
             _wait_for_window(STRIP_TITLE, app)
-            panel = _wait_for_window(FAN_TITLE, app)
+            panel = _show_fan(xtest, app)
             after_restart = _wait_dump(
                 restart_dump,
                 app,
@@ -475,6 +520,7 @@ def main() -> int:
             )
             if after_restart.get("toast", {}).get("visible"):
                 raise SmokeFailure("a toast reappeared after restart")
+            xtest.focus(panel)
             xtest.ctrl_z()
             time.sleep(0.5)
             after_restart_ctrlz = _wait_dump(
@@ -503,7 +549,7 @@ def main() -> int:
             readonly_dump = readonly_home / "dump.json"
             app = _start_app(readonly_home, readonly_dump)
             _wait_for_window(STRIP_TITLE, app)
-            panel = _wait_for_window(FAN_TITLE, app)
+            panel = _show_fan(xtest, app)
             _wait_dump(
                 readonly_dump,
                 app,

@@ -18,6 +18,7 @@ from lurkn.app import (
     LurkNotesApp,
     UndoController,
 )
+from lurkn.deck import DeckMachine
 from lurkn.events import DeckChanged
 from lurkn.notes import Note, discard_if_untouched
 
@@ -68,6 +69,9 @@ class FakePanel:
 
     def hide_toast(self) -> None:
         self.toast_visible = False
+
+    def set_visible(self, visible: bool) -> None:
+        self.visible = visible
 
     def show_note(self, note: Note, notes) -> None:
         self.shown.append(("note", note.id))
@@ -124,7 +128,10 @@ def make_app(
     app.notes = list(notes)
     app.session_ids = set(session_ids or ())
     app.current_id = None
-    app.state = STATE_FAN
+    # Ticket 04 moved deck state into the pure machine; these tests drive the
+    # app methods directly, so a machine without timers is enough.
+    app.deck = DeckMachine(lambda _delay, _callback: 0, lambda _handle: None)
+    app.deck.state = STATE_FAN
     app.save_source = 0
     app.unsaved = False
     app.read_only = read_only

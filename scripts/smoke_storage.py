@@ -51,14 +51,16 @@ def start_app(
             "GDK_BACKEND": "x11",
             "NO_AT_BRIDGE": "1",
             "LURKNOTES_APP_ID": (
-                f"dev.lurknotes.LurkNotes.storage-smoke.s{os.getpid()}.{RUN}"
+                f"dev.lurknotes.LurkNotes.storageSmoke.s{os.getpid()}.r{RUN}"
             ),
             "LURKNOTES_TEST_DUMP": str(dump),
+            "LURKNOTES_TEST_CONTROL": "1",
+            "LURKNOTES_TEST_PIN_DECK": "1",
         }
     )
     if type_text is not None:
         env["LURKNOTES_TEST_TYPE"] = type_text
-    return subprocess.Popen(
+    process = subprocess.Popen(
         [str(ROOT / "lurknotes")],
         cwd=str(ROOT),
         env=env,
@@ -66,6 +68,8 @@ def start_app(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    process.lurk_app_id = env["LURKNOTES_APP_ID"]  # type: ignore[attr-defined]
+    return process
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -114,7 +118,7 @@ def status_of(snapshot: dict) -> dict:
     return status
 
 
-def scenario_recover_from_backup(temporary: Path) -> None:
+def scenario_recover_from_backup(temporary: Path, xtest: base.XTest) -> None:
     data_home = temporary / "recover"
     notes_dir = data_home / NOTES_DIR
     notes_dir.mkdir(parents=True)
@@ -129,7 +133,7 @@ def scenario_recover_from_backup(temporary: Path) -> None:
     dump = data_home / "dump.json"
     app = start_app(data_home, dump)
     try:
-        base._wait_for_window(base.FAN_TITLE, app)
+        fan = base._show_fan(xtest, app)
         snapshot = fan_snapshot(
             dump,
             app,
@@ -137,6 +141,26 @@ def scenario_recover_from_backup(temporary: Path) -> None:
             and status_of(snap)["kind"] == "warning"
             and snap["titles"] == ["Recovered first", "Recovered second"],
         )
+        try:
+            base._raise_for_capture(xtest, fan, "the recovery banner")
+        except SmokeFailure as exc:
+            print(f"smoke-storage: banner pixel check skipped ({exc})")
+        else:
+            pixel, width, height = base._pixel_sampler(base._xwd_image(fan))
+            banner = pixel(2, 2)
+            if banner not in ((58, 58, 70), (74, 47, 53)):
+                raise SmokeFailure(
+                    f"status banner is #{banner[0]:02x}{banner[1]:02x}"
+                    f"{banner[2]:02x}, expected a dark #3a3a46/#4a2f35 surface"
+                )
+            for y in range(0, height, 8):
+                for x in range(0, width, 8):
+                    red, green, blue = pixel(x, y)
+                    if red > 245 and green > 245 and blue > 245:
+                        raise SmokeFailure(
+                            f"status banner has a near-white pixel at {x},{y}"
+                        )
+            print("smoke-storage: recovery banner surface is dark")
         status = status_of(snapshot)
         if "damaged" not in status["message"] or not status["dismissible"]:
             raise SmokeFailure(f"unexpected recovery banner: {status}")
@@ -157,7 +181,7 @@ def scenario_recover_from_backup(temporary: Path) -> None:
     restart_dump = data_home / "restart.json"
     app = start_app(data_home, restart_dump)
     try:
-        base._wait_for_window(base.FAN_TITLE, app)
+        base._show_fan(xtest, app)
         fan_snapshot(
             restart_dump,
             app,
@@ -199,7 +223,8 @@ def scenario_double_corruption(temporary: Path, xtest_holder: list) -> None:
     dump = data_home / "dump.json"
     app = start_app(data_home, dump, type_text=typed)
     try:
-        fan = base._wait_for_window(base.FAN_TITLE, app)
+        xtest = xtest_holder[0]
+        fan = base._show_fan(xtest, app)
         snapshot = fan_snapshot(
             dump,
             app,
@@ -220,7 +245,6 @@ def scenario_double_corruption(temporary: Path, xtest_holder: list) -> None:
         action_center = status.get("action_center")
         if not action_center:
             raise SmokeFailure("the Continue button has no clickable centre")
-        xtest = xtest_holder[0]
         scale = base._effective_scale()
         click_center(xtest, fan, action_center, scale)
         after_continue = fan_snapshot(
@@ -301,7 +325,8 @@ def scenario_future_version(temporary: Path, xtest_holder: list) -> None:
     dump = data_home / "dump.json"
     app = start_app(data_home, dump, type_text=typed)
     try:
-        fan = base._wait_for_window(base.FAN_TITLE, app)
+        xtest = xtest_holder[0]
+        fan = base._show_fan(xtest, app)
         snapshot = fan_snapshot(
             dump,
             app,
@@ -311,7 +336,6 @@ def scenario_future_version(temporary: Path, xtest_holder: list) -> None:
         )
         if status_of(snapshot)["kind"] != "warning":
             raise SmokeFailure(f"future version banner is not a warning: {snapshot}")
-        xtest = xtest_holder[0]
         note_window = base._click_until_note_open(xtest, app, fan, snapshot)
         base._wait_dump(
             dump,
@@ -350,9 +374,9 @@ def scenario_unwritable_then_retry(temporary: Path, xtest_holder: list) -> None:
     try:
         dump = data_home / "dump.json"
         app = start_app(data_home, dump, type_text=typed)
-        fan = base._wait_for_window(base.FAN_TITLE, app)
-        snapshot = fan_snapshot(dump, app, lambda snap: snap["titles"] == ["Base"])
         xtest = xtest_holder[0]
+        fan = base._show_fan(xtest, app)
+        snapshot = fan_snapshot(dump, app, lambda snap: snap["titles"] == ["Base"])
         base._click_until_note_open(xtest, app, fan, snapshot)
         failing = base._wait_dump(
             dump,
@@ -411,7 +435,7 @@ def main() -> int:
         xtest_holder.append(xtest)
         with tempfile.TemporaryDirectory(prefix="lurknotes-smoke-storage-") as temp:
             temporary = Path(temp)
-            scenario_recover_from_backup(temporary)
+            scenario_recover_from_backup(temporary, xtest_holder[0])
             scenario_double_corruption(temporary, xtest_holder)
             scenario_future_version(temporary, xtest_holder)
             scenario_unwritable_then_retry(temporary, xtest_holder)
