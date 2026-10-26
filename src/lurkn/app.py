@@ -25,11 +25,19 @@ Ctrl+Backspace, and the All Notes window. Drag reorder belongs to ticket 06.
     ABOVE window owns the screen edge. Off in production: no extra action and
     no polling.
 ``LURKNOTES_TEST_OPEN_ALL``
-    Open All Notes once the deck is mapped. Ticket 09 will replace this with
-    ``lurknotes all``; until then it lets the All Notes smoke test run.
+    Open All Notes once the deck is mapped. Kept for the ticket 07 smoke; the
+    real path is now ``lurknotes all``.
 ``LURKNOTES_TEST_PIN_DECK``
     Do not collapse the fan when the pointer leaves. Smokes for other tickets
     pin the deck so an unrelated pointer warp cannot hide the panel mid-test.
+``LURKNOTES_TEST_REFUSE_FOCUS``
+    Pretend activation was refused so the live smoke can prove the "Click to
+    type" hint and the first-click grant on a machine where ``present()``
+    normally succeeds.
+``LURKNOTES_TEST_NO_HOVER``
+    Ignore pointer-enter events. Lets the integration smoke prove that a bare
+    ``lurknotes`` expands the fan itself, on a desktop where other agents move
+    the shared pointer.
 ``LURKNOTES_TEST_UNDO_MS``
     Shorten the 10 s undo window. Production always uses 10 000 ms.
 """
@@ -52,13 +60,17 @@ gi.require_version("GdkX11", "4.0")
 
 from gi.repository import Gdk, GdkX11, Gio, GLib, Gtk
 
+from . import autostart as autostart_file
 from . import strings
+from .cli import CliError, Command, parse
 from .deck import (
     STATE_FAN,
     STATE_OPEN,
+    STATE_STRIP,
     DeckMachine,
 )
 from .events import DeckChanged
+from .focus import FocusGuard
 from .notes import (
     Note,
     add_at_top,
@@ -67,7 +79,9 @@ from .notes import (
     discard_if_untouched,
     find_note,
     index_of,
+    session_untouched_note,
 )
+from .onboarding import mark_onboarded, needs_onboarding
 from .retry import Retrier
 from .store import (
     LOAD_CORRUPT,
@@ -196,16 +210,15 @@ def _logical_workarea(monitor: Gdk.Monitor) -> Rect:
 class LurkNotesApp(Gtk.Application):
     def __init__(
         self,
-        action: str = "",
         x11: X11 | None = None,
         store: Store | None = None,
     ) -> None:
         super().__init__(
             application_id=APP_ID,
-            flags=Gio.ApplicationFlags.FLAGS_NONE,
+            # spec §9.3 / PLATFORM §5: argv is delivered to do_command_line,
+            # including on a cold start, and do_activate never fires.
+            flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE,
         )
-        # new|all are accepted now and wired to deck actions in a later ticket.
-        self.action = action
         self.x11 = x11
         self.store = store or Store()
         self.notes: list[Note] = []
@@ -257,6 +270,21 @@ class LurkNotesApp(Gtk.Application):
         self._test_typed = False
         self._test_open_all = os.environ.get("LURKNOTES_TEST_OPEN_ALL") == "1"
         self._pin_deck = os.environ.get("LURKNOTES_TEST_PIN_DECK") == "1"
+        # Prove that the bare command expands the fan by itself, with the
+        # pointer path disabled, on a desktop where concurrent agents move
+        # the shared pointer.
+        self._test_no_hover = os.environ.get("LURKNOTES_TEST_NO_HOVER") == "1"
+        self._last_command = ""
+        # Simulate a shell that refuses activation; the live smoke uses this
+        # to prove the "Click to type" path on a machine where present()
+        # normally succeeds (PLATFORM §4).
+        self._test_refuse_focus = (
+            os.environ.get("LURKNOTES_TEST_REFUSE_FOCUS") == "1"
+        )
+        # Ticket 09: first-launch onboarding and the 150 ms focus decision.
+        self._onboarding_pending = needs_onboarding()
+        self._focus_guard: FocusGuard | None = None
+        self._all_notes_focus_guard: FocusGuard | None = None
 
     @property
     def state(self) -> str:
@@ -297,15 +325,66 @@ class LurkNotesApp(Gtk.Application):
             self.add_action(control)
         self._load_notes()
 
-    def do_activate(self) -> None:
+    def do_command_line(self, command_line: Gio.ApplicationCommandLine) -> int:
+        """Handle every invocation, cold or warm (spec §9.3).
+
+        ``HANDLES_COMMAND_LINE`` is what gives single-instance behaviour: a
+        second process' argv is delivered here synchronously and its exit code
+        is this method's return value (PLATFORM §5). ``do_activate`` never
+        runs, so a cold start must build the deck from this path too.
+        """
+        argv = command_line.get_arguments()
+        try:
+            command = parse(list(argv[1:]))
+        except CliError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+
+        if command.help:
+            print(strings.USAGE)
+            return 0
+        if command.install_autostart:
+            return self._install_autostart()
+
         if self.strip is None:
             self._build_deck()
-        else:
-            # Startup/rest is the strip; only an open note keeps the panel
-            # mapped (spec §3/§6.1).
+        self._dispatch(command)
+        return 0
+
+    def _install_autostart(self) -> int:
+        try:
+            written = autostart_file.install(
+                launcher=autostart_file.launcher_path()
+            )
+        except OSError as exc:
+            print(
+                strings.AUTOSTART_INSTALL_FAILED.format(message=str(exc)),
+                file=sys.stderr,
+            )
+            return 1
+        print(strings.AUTOSTART_INSTALLED.format(path=written))
+        return 0
+
+    def _dispatch(self, command: Command) -> None:
+        if command.autostart:
+            # Session startup: just the strip. No fan, no present(), no focus.
+            self._last_command = "autostart"
             self.strip.set_visible(True)
-            if self.panel is not None and self.state == STATE_OPEN:
-                self.panel.set_visible(True)
+            return
+        self._last_command = command.action or "expand"
+        if command.action == "new":
+            self.command_new()
+        elif command.action == "all":
+            self.command_all()
+        else:
+            self.expand_deck()
+
+    def do_activate(self) -> None:
+        # Unreachable with HANDLES_COMMAND_LINE, kept as the plain-activation
+        # fallback so the app still has a sane surface if launched without argv.
+        if self.strip is None:
+            self._build_deck()
+        self.expand_deck()
 
     def do_shutdown(self) -> None:
         # Ticket 03: flush, drop untouched session notes, save once. Ticket 08:
@@ -313,6 +392,12 @@ class LurkNotesApp(Gtk.Application):
         # timers.
         self.deck.stop()
         self._shutdown_deck()
+        panel_guard = getattr(self, "_focus_guard", None)
+        if panel_guard is not None:
+            panel_guard.clear()
+        all_notes_guard = getattr(self, "_all_notes_focus_guard", None)
+        if all_notes_guard is not None:
+            all_notes_guard.clear()
         self.deck_changed_event.clear()
         self._retrier.stop()
         if self.x11 is not None:
@@ -534,7 +619,15 @@ class LurkNotesApp(Gtk.Application):
             on_scrolled=lambda: self._schedule_test_dump(delay=30),
             on_delete=self.delete_current,
             on_undo=self.undo_delete,
+            on_focus_click=self._grant_panel_focus,
         )
+        self._focus_guard = FocusGuard(
+            self._schedule_timer,
+            self._cancel_timer,
+            is_focused=self._panel_focus_for_guard,
+            on_missing=self._on_panel_focus_missing,
+        )
+        self.panel.connect("notify::is-active", self._on_panel_active_changed)
         self.panel.show_fan(self.notes)
         self.panel.set_read_only(self.read_only)
         self._show_storage_status()
@@ -580,6 +673,8 @@ class LurkNotesApp(Gtk.Application):
         return motion
 
     def _on_deck_enter(self) -> None:
+        if getattr(self, "_test_no_hover", False):
+            return
         self.deck.hover_enter()
 
     def _on_deck_leave(self) -> None:
@@ -615,6 +710,7 @@ class LurkNotesApp(Gtk.Application):
         self.all_notes.refresh()
         self.all_notes.present()
         self.all_notes.focus_search()
+        self._watch_all_notes_focus()
         self._schedule_test_dump(delay=100)
 
     def _on_all_notes_map(self, *_args) -> None:
@@ -727,11 +823,15 @@ class LurkNotesApp(Gtk.Application):
         if self.panel is None:
             return
         self.panel.set_visible(True)
+        self._maybe_show_onboarding()
         self._schedule_test_dump(delay=30)
 
     def _hide_panel(self) -> None:
         if self.panel is None:
             return
+        if self._focus_guard is not None:
+            self._focus_guard.clear()
+        self._set_focus_hint(False)
         self.panel.set_visible(False)
         self._schedule_test_dump(delay=30)
 
@@ -803,11 +903,55 @@ class LurkNotesApp(Gtk.Application):
 
     # -- navigation ----------------------------------------------------
 
+    def expand_deck(self) -> None:
+        """Show the fan now, without a hover delay (spec §9.3).
+
+        No focus is requested: this path is also the bare ``lurknotes``
+        invocation, where the user may just be looking at the deck.
+        """
+        if self.strip is None:
+            self._build_deck()
+        if self.deck.state == STATE_STRIP:
+            self.deck.expand_now()
+        if self.panel is not None and self.deck.panel_visible:
+            # expand_now's callback maps it; an already-open note keeps it.
+            self.panel.set_visible(True)
+            self._maybe_show_onboarding()
+        self._schedule_test_dump(delay=30)
+
+    def command_new(self) -> bool:
+        """``lurknotes new``: create and open a note, or reuse the untouched one.
+
+        Ticket 08 gate: a read-only or unconfirmed-corrupt deck must surface
+        its banner instead of silently doing nothing. ``all`` still works.
+        """
+        if self.read_only or self.overwrite_blocked:
+            self.expand_deck()
+            self._show_storage_status()
+            return False
+
+        current = self.current_id if self.state == STATE_OPEN else None
+        reusable = session_untouched_note(
+            self.notes, current, self.session_ids
+        )
+        if reusable is not None:
+            # A second hotkey press while the blank note is already open must
+            # focus that note, not stack another Untitled (spec §9.3).
+            self.open_note(reusable.id)
+            return True
+        self.new_note()
+        return True
+
+    def command_all(self) -> None:
+        self.show_all_notes()
+
     def new_note(self) -> None:
         """Create a note at the top of the deck and open it (spec §4.1)."""
         if self.read_only or self.overwrite_blocked:
             # Read-only and unconfirmed-corrupt files cannot accept new notes:
-            # anything created now could never be saved.
+            # anything created now could never be saved. Surface the existing
+            # ticket 08 banner instead of silently doing nothing.
+            self._show_storage_status()
             return
         self._leave_current()
         note = Note.create()
@@ -836,6 +980,7 @@ class LurkNotesApp(Gtk.Application):
         # editor must map that hidden panel before present() focuses it.
         if self.panel is not None:
             self.panel.set_visible(True)
+            self._maybe_show_onboarding()
         self.panel.show_note(note, self.notes)
         self._activate_panel()
         self._schedule_test_dump()
@@ -848,6 +993,9 @@ class LurkNotesApp(Gtk.Application):
         self._leave_current()
         self.deck.close()
 
+        if self._focus_guard is not None:
+            self._focus_guard.clear()
+        self._set_focus_hint(False)
         xid = self._xid(self.panel) if self.panel is not None else None
         if xid is not None and self.x11 is not None:
             self.x11.set_input(xid, False)
@@ -866,6 +1014,9 @@ class LurkNotesApp(Gtk.Application):
         if self._undo.pending is not None:
             return
         if self.deck.collapse():
+            if self._focus_guard is not None:
+                self._focus_guard.clear()
+            self._set_focus_hint(False)
             self._schedule_test_dump(delay=30)
 
     def _pointer_over_deck(self) -> bool:
@@ -890,6 +1041,112 @@ class LurkNotesApp(Gtk.Application):
             return False
         xid = self._xid(self.panel)
         return xid is not None and self.x11.has_focus(xid)
+
+    # -- focus policy (spec §9.5) -------------------------------------
+
+    def _watch_panel_focus(self) -> None:
+        """Check 150 ms after activation; show the hint if focus was refused."""
+        guard = getattr(self, "_focus_guard", None)
+        if guard is None or getattr(self, "x11", None) is None:
+            return
+        self._set_focus_hint(False)
+        guard.watch()
+
+    def _panel_focus_for_guard(self) -> bool:
+        if getattr(self, "_test_refuse_focus", False):
+            return False
+        return self._panel_has_focus()
+
+    def _on_panel_focus_missing(self) -> None:
+        # Only an editor needs a keyboard: a blocked `new` leaves the fan up,
+        # where no typing target exists.
+        if (
+            self.panel is None
+            or not self.panel.get_visible()
+            or self.state != STATE_OPEN
+        ):
+            return
+        self._set_focus_hint(True)
+        self._schedule_test_dump(delay=30)
+
+    def _on_panel_active_changed(self, *_args) -> None:
+        """Clear the hint when focus arrives a little later than 150 ms."""
+        if self.panel is None or self.x11 is None:
+            return
+        if getattr(self, "_test_refuse_focus", False):
+            return
+        if not self.panel.is_active():
+            return
+        if not self._panel_has_focus():
+            return
+        if self._focus_guard is not None:
+            self._focus_guard.focus_arrived()
+        self._set_focus_hint(False)
+        self._schedule_test_dump(delay=30)
+
+    def _grant_panel_focus(self) -> None:
+        """First click on an unfocused editor: take input and focus the caret."""
+        if self.panel is None:
+            return
+        if self._focus_guard is not None:
+            self._focus_guard.clear()
+        self._set_focus_hint(False)
+        xid = self._xid(self.panel)
+        if xid is not None and self.x11 is not None:
+            self.x11.set_input(xid, True)
+            self.x11.allow_focus(xid)
+        self.panel.present()
+        self.panel.focus_editor()
+        self._schedule_test_dump(delay=30)
+
+    def _set_focus_hint(self, visible: bool) -> None:
+        show = getattr(self.panel, "show_focus_hint", None)
+        if show is not None:
+            show(visible)
+
+    def _watch_all_notes_focus(self) -> None:
+        if self.all_notes is None or self.x11 is None:
+            return
+        if self._all_notes_focus_guard is None:
+            self._all_notes_focus_guard = FocusGuard(
+                self._schedule_timer,
+                self._cancel_timer,
+                is_focused=self._all_notes_has_focus,
+                on_missing=self._on_all_notes_focus_missing,
+            )
+        self._all_notes_focus_guard.watch()
+
+    def _all_notes_has_focus(self) -> bool:
+        if self.all_notes is None or self.x11 is None:
+            return False
+        if getattr(self, "_test_refuse_focus", False):
+            return False
+        xid = self._xid(self.all_notes)
+        return xid is not None and self.x11.has_focus(xid)
+
+    def _on_all_notes_focus_missing(self) -> None:
+        # A normal window takes focus on click by itself; retry the activation
+        # once rather than pretending an edge panel is on screen.
+        if self.all_notes is None or not self.all_notes.get_visible():
+            return
+        self.all_notes.present()
+        self.all_notes.focus_search()
+        self._schedule_test_dump(delay=30)
+
+    def _maybe_show_onboarding(self) -> None:
+        """Show the one-time hotkey hint the first time the deck is visible."""
+        if not getattr(self, "_onboarding_pending", False):
+            return
+        if self.panel is None or not self.panel.get_visible():
+            return
+        show = getattr(self.panel, "show_onboarding", None)
+        if show is None:
+            return
+        self._onboarding_pending = False
+        show()
+        # Best effort: a read-only data dir still gets the hint this run.
+        mark_onboarded()
+        self._schedule_test_dump(delay=30)
 
     def cycle_note(self, step: int) -> None:
         """Open the note *step* places away, wrapping (spec §7.3)."""
@@ -1018,6 +1275,9 @@ class LurkNotesApp(Gtk.Application):
             self.x11.allow_focus(xid)
         self.panel.present()
         self.panel.focus_editor()
+        # Spec §9.5: present() is a request. Decide 150 ms later whether the
+        # panel actually got the keyboard; otherwise show "Click to type".
+        self._watch_panel_focus()
 
     # -- editing -------------------------------------------------------
 
@@ -1119,6 +1379,10 @@ class LurkNotesApp(Gtk.Application):
             ),
             "toast": self.panel.toast_snapshot(),
             "undo_pending": self._undo.pending is not None,
+            "panel_focused": self._panel_has_focus(),
+            "focus_hint": self.panel.focus_hint_snapshot(),
+            "onboarding": self.panel.onboarding_snapshot(),
+            "last_command": getattr(self, "_last_command", ""),
         }
         target = Path(self._test_dump_path)
         temporary = target.with_name(target.name + ".tmp")
