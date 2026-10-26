@@ -150,6 +150,18 @@ class PanelWindow(Gtk.Window):
     def tab_center(self, note_id: str) -> list[float] | None:
         return self.fan.tab_center(note_id, relative_to=self)
 
+    def show_peek(self, note_id: str, lines: Sequence[str]) -> None:
+        self.fan.show_peek(note_id, lines)
+
+    def hide_peek(self) -> None:
+        self.fan.hide_peek()
+
+    def peek_snapshot(self) -> dict:
+        return self.fan.peek_snapshot()
+
+    def peek_center(self) -> list[float] | None:
+        return self.fan.peek_center(relative_to=self)
+
     def tab_heights(self) -> list[int]:
         return self.fan.tab_heights()
 

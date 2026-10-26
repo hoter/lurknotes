@@ -1,11 +1,11 @@
 """The fan: tabs for every note, in array order (spec §6.2).
 
 Each tab is a plain ``Gtk.Button`` with a title label and a per-tab motion
-controller. The read-only peek is a separate no-focus window placed next to the
-hovered tab (``windows/peek.py``), so showing or hiding it never changes tab
-heights or positions: crossing tabs cannot slide another tab under the pointer.
-Ticket 06 replaces the button's ``clicked`` handler with one ``GestureDrag`` on
-this same widget; the motion controllers stay as they are.
+controller. The read-only peek is a fixed pane at the bottom of the fan: it is
+always allocated, so showing or hiding preview text never changes tab heights,
+tab positions, the header, or the wheel target. Tabs stay top-aligned. Ticket
+06 replaces the button's ``clicked`` handler with one ``GestureDrag`` on this
+same widget; the motion controllers stay as they are.
 """
 
 from __future__ import annotations
@@ -15,7 +15,10 @@ from typing import Callable, Sequence
 from gi.repository import Gtk, Pango
 
 from .. import strings
-from ..notes import Note
+from ..notes import PREVIEW_LINES, Note
+
+# Six 0.9em body lines plus padding; fixed so the pane never resizes.
+PEEK_PANE_HEIGHT = 132
 
 
 class FanPage(Gtk.Box):
@@ -38,6 +41,8 @@ class FanPage(Gtk.Box):
         self._on_scrolled = on_scrolled
         self._tabs: dict[str, Gtk.Button] = {}
         self._tab_order: list[str] = []
+        self._peek_note: str | None = None
+        self._peek_lines: list[str] = []
 
         self.add_css_class("fan")
         for side in ("top", "bottom", "start", "end"):
@@ -87,11 +92,30 @@ class FanPage(Gtk.Box):
         self.scroller = scroller
         self.append(scroller)
 
+        # Fixed peek pane: always allocated, even while empty. The tab list
+        # shrinks/scrolls inside its own viewport, so a peek can never change
+        # tab geometry or slide another tab under the pointer.
+        self.peek_pane = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.peek_pane.add_css_class("peek-pane")
+        self.peek_pane.set_size_request(-1, PEEK_PANE_HEIGHT)
+        self.peek_hint = Gtk.Label(label=strings.PEEK_HINT)
+        self.peek_hint.set_xalign(0)
+        self.peek_hint.add_css_class("hint")
+        self.peek_pane.append(self.peek_hint)
+        self.append(self.peek_pane)
+
         # The scroller already routes wheel events to its adjustment; this
         # signal only refreshes the smoke-test snapshot after a scroll.
         scroller.get_vadjustment().connect("value-changed", self._on_value_changed)
+        # Wheel over the peek pane must still scroll the tab list.
+        peek_scroll = Gtk.EventControllerScroll(
+            flags=Gtk.EventControllerScrollFlags.VERTICAL
+        )
+        peek_scroll.connect("scroll", self._on_peek_scroll)
+        self.peek_pane.add_controller(peek_scroll)
 
     def set_notes(self, notes: Sequence[Note]) -> None:
+        self.hide_peek()
         self._tabs.clear()
         self._tab_order.clear()
         while (child := self.rows.get_first_child()) is not None:
@@ -127,6 +151,63 @@ class FanPage(Gtk.Box):
             self.rows.append(button)
             self._tabs[note.id] = button
             self._tab_order.append(note.id)
+
+    # -- peek ----------------------------------------------------------
+
+    def show_peek(self, note_id: str, lines: Sequence[str]) -> None:
+        """Show up to six read-only body lines in the fixed in-fan pane."""
+        if note_id not in self._tabs:
+            self.hide_peek()
+            return
+        self._clear_peek_pane()
+        if lines:
+            for line in lines[:PREVIEW_LINES]:
+                label = Gtk.Label(label=line)
+                label.set_xalign(0)
+                label.set_ellipsize(Pango.EllipsizeMode.END)
+                label.add_css_class("peek-line")
+                self.peek_pane.append(label)
+            self.peek_hint.set_visible(False)
+        else:
+            self.peek_hint.set_text(strings.PEEK_EMPTY)
+            self.peek_hint.set_visible(True)
+        self._peek_note = note_id
+        self._peek_lines = list(lines[:PREVIEW_LINES])
+
+    def hide_peek(self) -> None:
+        self._clear_peek_pane()
+        self.peek_hint.set_text(strings.PEEK_HINT)
+        self.peek_hint.set_visible(True)
+        self._peek_note = None
+        self._peek_lines = []
+
+    def peek_snapshot(self) -> dict:
+        return {
+            "id": self._peek_note,
+            "lines": list(self._peek_lines),
+            "visible": [self._peek_note] if self._peek_note else [],
+        }
+
+    def peek_center(self, relative_to: Gtk.Widget | None = None) -> list[float] | None:
+        found, bounds = self.peek_pane.compute_bounds(relative_to or self)
+        if not found:
+            return None
+        return [
+            bounds.get_x() + bounds.get_width() / 2,
+            bounds.get_y() + bounds.get_height() / 2,
+        ]
+
+    def _clear_peek_pane(self) -> None:
+        while (child := self.peek_pane.get_first_child()) is not None:
+            if child is self.peek_hint:
+                break
+            self.peek_pane.remove(child)
+
+    def _on_peek_scroll(self, _controller, _dx, dy) -> bool:
+        self.scroller.get_vadjustment().set_value(
+            self.scroller.get_vadjustment().get_value() + dy * 60
+        )
+        return True
 
     # -- geometry / smoke hooks ---------------------------------------
 

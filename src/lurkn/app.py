@@ -5,7 +5,7 @@ implement layer-shell, and only EWMH lets a window sit at the edge, above other
 windows, outside the dock and on every workspace (spec §9.1).
 
 The deck state machine is explicit: ``strip`` -> ``fan`` -> ``open``, with
-peek as a read-only overlay beside a hovered tab. The pure machine (hover
+peek as a read-only pane inside the fan. The pure machine (hover
 delays, peek, collapse) lives in :mod:`lurkn.deck`; this module maps its states
 onto GTK widgets and X11 hints, owns the one-slot memory undo behind
 Ctrl+Backspace, and the All Notes window. Drag reorder belongs to ticket 06.
@@ -83,8 +83,6 @@ from .ui import install as install_theme
 from .windows.all_notes import AllNotesWindow
 from .windows.panel import WIDTH as PANEL_WIDTH
 from .windows.panel import PanelWindow
-from .windows.peek import PeekWindow
-from .windows.peek import WIDTH as PEEK_WIDTH
 from .windows.strip import WIDTH as STRIP_WIDTH
 from .windows.strip import StripWindow
 from .x11 import Rect, X11, centered_position, panel_rect, strip_rect
@@ -235,7 +233,6 @@ class LurkNotesApp(Gtk.Application):
         self._load_error: str | None = None
         self.strip: StripWindow | None = None
         self.panel: PanelWindow | None = None
-        self.peek: PeekWindow | None = None
         self.all_notes: AllNotesWindow | None = None
         self._all_notes_placed = False
         self._all_notes_place_tries = 0
@@ -244,7 +241,6 @@ class LurkNotesApp(Gtk.Application):
         # (reorder) must do the same when it lands.
         self.deck_changed_event = DeckChanged()
         self._workarea: Rect | None = None
-        self._peek_rect: Rect | None = None
         self._retrier = Retrier(
             self._retry_save,
             schedule=GLib.timeout_add,
@@ -357,6 +353,8 @@ class LurkNotesApp(Gtk.Application):
             self.open_note(command[5:])
         elif command == "close":
             self.close_note()
+        elif command == "undo":
+            self.undo_delete()
         else:
             print(f"lurknotes: unknown test control {command!r}", file=sys.stderr)
 
@@ -540,7 +538,6 @@ class LurkNotesApp(Gtk.Application):
         self.panel.show_fan(self.notes)
         self.panel.set_read_only(self.read_only)
         self._show_storage_status()
-        self.peek = PeekWindow(self)
 
         # Hover is tracked at the window edges, not per tab: leaving the strip
         # for the panel is one continuous "inside the deck" stay, and only
@@ -554,9 +551,8 @@ class LurkNotesApp(Gtk.Application):
 
         # Realize, then mark the windows as non-focusing *before* mapping them.
         # A window that maps with input=True would yank keyboard focus from
-        # whatever the user is typing in. The peek window maps on tab hover, so
-        # it gets the same treatment.
-        for window in (self.strip, self.panel, self.peek):
+        # whatever the user is typing in.
+        for window in (self.strip, self.panel):
             window.realize()
             xid = self._xid(window)
             if xid is None:
@@ -567,14 +563,12 @@ class LurkNotesApp(Gtk.Application):
 
         self.strip.connect("map", self._on_strip_map)
         self.panel.connect("map", self._on_panel_map)
-        self.peek.connect("map", self._on_peek_map)
         for window in (self.strip, self.panel):
             window.connect("close-request", self._on_close_request)
         # Spec §3/§6.1: rest is the strip. The fan is mapped by the hover
         # machine, never at startup.
         self.strip.set_visible(True)
         self.panel.set_visible(False)
-        self.peek.set_visible(False)
         self._schedule_test_dump(delay=100)
         if self._test_open_all:
             GLib.timeout_add(250, self._open_all_notes_for_test)
@@ -589,8 +583,11 @@ class LurkNotesApp(Gtk.Application):
         self.deck.hover_enter()
 
     def _on_deck_leave(self) -> None:
-        if not self._pin_deck:
-            self.deck.hover_leave()
+        if self._pin_deck:
+            return
+        # Ticket 05: while an undo is available, unmapping the fan would take
+        # the toast and its Undo button with it. Hide the peek, stay mapped.
+        self.deck.hover_leave(allow_collapse=self._undo.pending is None)
 
     def _on_tab_enter(self, note_id: str) -> None:
         self.deck.hover_tab(note_id)
@@ -725,11 +722,6 @@ class LurkNotesApp(Gtk.Application):
         GLib.timeout_add(50, self._settle_panel)
         self._schedule_test_dump(delay=60)
 
-    def _on_peek_map(self, *_args) -> None:
-        self._settle_peek()
-        GLib.timeout_add(50, self._settle_peek)
-        self._schedule_test_dump(delay=60)
-
     def _show_panel(self) -> None:
         """Map the fan without focus: never ``present()`` for hover (§7.4)."""
         if self.panel is None:
@@ -744,72 +736,18 @@ class LurkNotesApp(Gtk.Application):
         self._schedule_test_dump(delay=30)
 
     def _show_peek(self, note_id: str) -> None:
-        if self.peek is None or self.panel is None or self.state != STATE_FAN:
+        if self.panel is None or self.state != STATE_FAN:
             return
         note = find_note(self.notes, note_id)
         if note is None:
             return
-        lines = note.preview()
-        if not lines:
-            self._hide_peek()
-            return
-        self.peek.show_lines(lines)
-        center = self.panel.tab_center(note_id)
-        if center is None or self._workarea is None:
-            self._hide_peek()
-            return
-        height = self.peek.estimated_height()
-        workarea = self._workarea
-        x = (
-            workarea.x
-            + workarea.width
-            - PANEL_WIDTH
-            - STRIP_WIDTH
-            - PEEK_WIDTH
-            - 6
-        )
-        y = workarea.y + center[1] - height / 2
-        y = max(workarea.y, min(y, workarea.y + workarea.height - height))
-        x = max(workarea.x, x)
-        surface = self.peek.get_surface()
-        if surface is None:
-            return
-        scale = surface.get_scale()
-        self._peek_rect = Rect(
-            round(x * scale),
-            round(y * scale),
-            round(PEEK_WIDTH * scale),
-            round(height * scale),
-        )
-        self.peek.set_visible(True)
-        self._place_peek()
+        self.panel.show_peek(note_id, note.preview())
         self._schedule_test_dump(delay=30)
 
     def _hide_peek(self) -> None:
-        if self.peek is not None:
-            self.peek.set_visible(False)
+        if self.panel is not None:
+            self.panel.hide_peek()
         self._schedule_test_dump(delay=20)
-
-    def _settle_peek(self) -> bool:
-        if self.peek is None or self.x11 is None:
-            return False
-        xid = self._xid(self.peek)
-        if xid is None:
-            return False
-        self.x11.set_deck_hints(xid)
-        self.x11.set_input(xid, False)
-        self.x11.set_no_focus(xid)
-        self._place_peek()
-        return False
-
-    def _place_peek(self) -> bool:
-        if self.peek is None or self.x11 is None or self._peek_rect is None:
-            return False
-        xid = self._xid(self.peek)
-        if xid is None:
-            return False
-        self.x11.move_resize(xid, self._peek_rect)
-        return False
 
     def _settle_strip(self) -> bool:
         if self.strip is None or self.x11 is None:
@@ -922,10 +860,29 @@ class LurkNotesApp(Gtk.Application):
         """Collapse fan -> strip from the header ``×`` (no focus needed).
 
         The machine refuses in ``open``: an open note is never discarded by a
-        hover path or a stray click on a header that is not even showing.
+        hover path or a stray click on a header that is not even showing. An
+        undo toast pins the panel too: its Undo button must stay clickable.
         """
+        if self._undo.pending is not None:
+            return
         if self.deck.collapse():
             self._schedule_test_dump(delay=30)
+
+    def _pointer_over_deck(self) -> bool:
+        """Is the pointer still inside the strip+panel rectangle?"""
+        if self.x11 is None or self._workarea is None or self.panel is None:
+            return True
+        pointer = self.x11.pointer()
+        surface = self.panel.get_surface()
+        if pointer is None or surface is None:
+            return True
+        scale = surface.get_scale()
+        workarea = self._workarea
+        right = round((workarea.x + workarea.width) * scale)
+        left = right - round((PANEL_WIDTH + STRIP_WIDTH) * scale)
+        top = round(workarea.y * scale)
+        bottom = round((workarea.y + workarea.height) * scale)
+        return left <= pointer[0] < right and top <= pointer[1] < bottom
 
     def _panel_has_focus(self) -> bool:
         """Authoritative focus check; ``is_active()`` lies after unmap."""
@@ -1020,7 +977,11 @@ class LurkNotesApp(Gtk.Application):
     def _on_undo_expired(self) -> None:
         if self.panel is not None:
             self.panel.hide_toast()
-        self._schedule_test_dump()
+        # Nothing is pinning the fan any more. If the pointer is already
+        # gone, the next leave event will never come, so collapse now.
+        if self.state == STATE_FAN and not self._pointer_over_deck():
+            self.deck.collapse()
+        self._schedule_test_dump(delay=30)
 
     def _leave_current(self) -> None:
         """Flush and, when appropriate, drop the note being left."""
@@ -1115,17 +1076,8 @@ class LurkNotesApp(Gtk.Application):
         state = self.state
         is_open = state == STATE_OPEN
         is_fan = state == STATE_FAN
-        peek_id = self.deck.peek_id
-        peek_shown = bool(
-            peek_id is not None
-            and self.peek is not None
-            and self.peek.get_visible()
-        )
-        peek = {
-            "id": peek_id,
-            "lines": list(self.peek.lines) if peek_shown else [],
-            "visible": [peek_id] if peek_shown else [],
-        }
+        peek = self.panel.peek_snapshot()
+        peek["center"] = self.panel.peek_center() if is_fan else None
         snapshot = {
             "state": state,
             "current_id": self.current_id,
