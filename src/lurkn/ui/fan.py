@@ -185,6 +185,7 @@ class FanPage(Gtk.Box):
         return {
             "id": self._peek_note,
             "lines": list(self._peek_lines),
+            "rendered": self._rendered_peek_lines(),
             "visible": [self._peek_note] if self._peek_note else [],
         }
 
@@ -197,11 +198,23 @@ class FanPage(Gtk.Box):
             bounds.get_y() + bounds.get_height() / 2,
         ]
 
+    def _rendered_peek_lines(self) -> list[str]:
+        rendered: list[str] = []
+        child = self.peek_pane.get_first_child()
+        while child is not None:
+            if child is not self.peek_hint and isinstance(child, Gtk.Label):
+                rendered.append(child.get_text())
+            child = child.get_next_sibling()
+        return rendered
+
     def _clear_peek_pane(self) -> None:
-        while (child := self.peek_pane.get_first_child()) is not None:
-            if child is self.peek_hint:
-                break
-            self.peek_pane.remove(child)
+        """Remove every preview line, keeping the fixed hint label."""
+        child = self.peek_pane.get_first_child()
+        while child is not None:
+            following = child.get_next_sibling()
+            if child is not self.peek_hint:
+                self.peek_pane.remove(child)
+            child = following
 
     def _on_peek_scroll(self, _controller, _dx, dy) -> bool:
         self.scroller.get_vadjustment().set_value(

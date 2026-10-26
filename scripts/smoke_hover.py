@@ -820,6 +820,10 @@ def scenario_peek(
         raise SmokeFailure(f"peek lines are {peek['lines']!r}, expected body lines")
     if peek["visible"] != [first_id]:
         raise SmokeFailure(f"peek visibility is {peek['visible']!r}, expected exactly one")
+    if peek.get("rendered") != peek["lines"]:
+        raise SmokeFailure(
+            f"peek pane renders {peek.get('rendered')!r}, expected {peek['lines']!r}"
+        )
     assert_no_focus_theft(app, before, fan, "the tab peek")
     check_peek_in_fan(app, fan, peek)
     print(
@@ -888,6 +892,11 @@ def scenario_peek(
             f"after crossing tabs the visible peeks are "
             f"{crossed['peek']['visible']!r}, expected only {second_id}"
         )
+    if crossed["peek"].get("rendered") != crossed["peek"]["lines"]:
+        raise SmokeFailure(
+            "crossing tabs left stale preview rows: "
+            f"{crossed['peek'].get('rendered')!r}"
+        )
     print("smoke-hover: crossing tabs hides the old peek and shows only the new one")
 
     # Leave the tab but stay in the fan: the peek hides, the fan stays.
@@ -903,6 +912,11 @@ def scenario_peek(
     )
     if cleared.get("state") != "fan":
         raise SmokeFailure("leaving a tab collapsed the fan; it should stay open")
+    if (cleared.get("peek") or {}).get("rendered"):
+        raise SmokeFailure(
+            "leaving the tab left preview rows in the pane: "
+            f"{(cleared.get('peek') or {}).get('rendered')!r}"
+        )
     print("smoke-hover: leaving the tab hides the peek and keeps the fan")
 
 
