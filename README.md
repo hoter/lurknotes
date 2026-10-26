@@ -70,8 +70,12 @@ it. Nothing is written outside `$XDG_DATA_HOME` and `~/.config`.
 /home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_storage.py
 /home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_drag.py
 /home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_integration.py
+/home/dev/projects/ubuntu/.venv/bin/python scripts/acceptance.py
 ```
 
 Each smoke starts its own instance against temporary XDG directories, uses a
 unique application id, checks the real X11 windows, then stops the process it
-started.
+started. `acceptance.py` covers the remaining MVP criteria and measurements
+(cold/warm start, idle RSS/CPU, real 10 s undo, fullscreen stacking, no-network
+sockets, `kill -9` stress); its report is
+[.scratch/lurknotes-mvp/acceptance.md](.scratch/lurknotes-mvp/acceptance.md).

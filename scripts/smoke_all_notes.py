@@ -423,8 +423,11 @@ def run_search_and_quit(
         snapshot = wait_all_notes(
             dump,
             app,
+            # The dump can be written before GTK has allocated a freshly
+            # mapped window; 0x0 here is a layout race, not a product failure.
             lambda block: block.get("mapped") is True
-            and block.get("ids") == deck_order,
+            and block.get("ids") == deck_order
+            and (block.get("width"), block.get("height")) == (WIDTH, HEIGHT),
         )
         if snapshot["titles"] != [
             "Groceries",
