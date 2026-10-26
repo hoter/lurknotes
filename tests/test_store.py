@@ -276,6 +276,32 @@ def test_corrupt_main_recovers_from_backup_quarantines_it_and_persists(tmp_path)
     assert len(corrupt_files(tmp_path)) == 1
 
 
+@pytest.mark.parametrize(
+    "main_text",
+    [
+        '{"version": 1, "notes": "nope"}',
+        '{"notes": []}',
+        '{"version": 1, "notes": [{"id": "a"}]}',
+    ],
+    ids=["wrong-shape", "missing-version", "bad-note"],
+)
+def test_any_unreadable_main_shape_recovers_from_a_valid_backup(tmp_path, main_text):
+    path = tmp_path / "notes.json"
+    backup = tmp_path / "notes.bak.json"
+    recovered = [note("a", "still recovered")]
+    path.write_text(main_text, encoding="utf-8")
+    original_main = path.read_bytes()
+    write_json(backup, payload(*recovered))
+
+    result = Store(path).load()
+
+    assert result.status == LOAD_RECOVERED
+    assert result.notes == recovered
+    assert result.corrupt_path is not None
+    assert result.corrupt_path.read_bytes() == original_main
+    assert read_json(path) == payload(*recovered)
+
+
 def test_recovered_notes_stay_in_memory_when_persisting_them_fails(tmp_path, monkeypatch):
     path = tmp_path / "notes.json"
     backup = tmp_path / "notes.bak.json"
