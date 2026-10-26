@@ -293,6 +293,7 @@ def test_corrupt_main_recovers_from_backup_quarantines_it_and_persists(tmp_path)
     assert read_json(path) == payload(*recovered)
     assert backup.read_bytes() == original_backup
     assert not (tmp_path / "notes.json.tmp").exists()
+    assert not (tmp_path / "notes.recovering").exists()
 
     restart = Store(path).load()
     assert restart.status == LOAD_OK
@@ -386,13 +387,39 @@ def test_recovered_notes_stay_in_memory_when_persisting_them_fails(tmp_path, mon
     assert len(corrupt_files(tmp_path)) == 1
 
 
-def test_a_missing_main_is_restored_from_a_valid_backup(tmp_path):
+def test_a_missing_main_without_a_recovery_marker_does_not_restore_the_backup(
+    tmp_path,
+):
+    """Ticket 02: no main file means an empty deck, not a stale backup.
+
+    The backup is a crash-safety copy, not a second source of truth. Restoring
+    it on every missing main would resurrect notes the user deliberately
+    deleted (or an emptied file) long after the fact.
+    """
+    path = tmp_path / "notes.json"
+    backup = tmp_path / "notes.bak.json"
+    stale = [note("a", "old backup")]
+    write_json(backup, payload(*stale))
+    original_backup = backup.read_bytes()
+
+    result = Store(path).load()
+
+    assert result.status == LOAD_OK
+    assert result.notes == []
+    assert not path.exists()
+    assert backup.read_bytes() == original_backup
+    assert not (tmp_path / "notes.recovering").exists()
+
+
+def test_a_missing_main_with_a_recovery_marker_restores_the_backup(tmp_path):
     """Covers a crash between quarantining the corrupt file and persisting."""
     path = tmp_path / "notes.json"
     backup = tmp_path / "notes.bak.json"
+    marker = tmp_path / "notes.recovering"
     recovered = [note("a", "still here")]
     write_json(backup, payload(*recovered))
     original_backup = backup.read_bytes()
+    marker.write_text("recovering\n", encoding="utf-8")
 
     result = Store(path).load()
 
@@ -400,6 +427,75 @@ def test_a_missing_main_is_restored_from_a_valid_backup(tmp_path):
     assert result.notes == recovered
     assert read_json(path) == payload(*recovered)
     assert backup.read_bytes() == original_backup
+    # The marker is cleared only after the persist succeeded.
+    assert not marker.exists()
+
+
+def test_a_missing_main_with_a_marker_and_unusable_backup_starts_empty(
+    tmp_path,
+):
+    path = tmp_path / "notes.json"
+    backup = tmp_path / "notes.bak.json"
+    marker = tmp_path / "notes.recovering"
+    backup.write_text(CORRUPT_TEXT, encoding="utf-8")
+    marker.write_text("recovering\n", encoding="utf-8")
+
+    result = Store(path).load()
+
+    assert result.status == LOAD_OK
+    assert result.notes == []
+    assert not path.exists()
+    assert marker.exists() is False
+    assert backup.read_text(encoding="utf-8") == CORRUPT_TEXT
+
+
+def test_corrupt_main_recovery_writes_then_clears_the_recovery_marker(
+    tmp_path,
+):
+    path = tmp_path / "notes.json"
+    backup = tmp_path / "notes.bak.json"
+    marker = tmp_path / "notes.recovering"
+    recovered = [note("a", "from backup")]
+    path.write_text(CORRUPT_TEXT, encoding="utf-8")
+    write_json(backup, payload(*recovered))
+    store = Store(path)
+
+    result = store.load()
+
+    assert result.status == LOAD_RECOVERED
+    assert result.notes == recovered
+    assert not marker.exists()
+    assert read_json(path) == payload(*recovered)
+
+
+def test_a_failed_recovery_persist_keeps_the_marker_for_the_next_launch(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "notes.json"
+    backup = tmp_path / "notes.bak.json"
+    marker = tmp_path / "notes.recovering"
+    recovered = [note("a", "from backup")]
+    path.write_text(CORRUPT_TEXT, encoding="utf-8")
+    write_json(backup, payload(*recovered))
+    store = Store(path)
+
+    def explode(*_args, **_kwargs):
+        raise OSError("data dir is read-only")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", explode)
+        result = store.load()
+
+    assert result.status == LOAD_RECOVERED
+    assert result.notes == recovered
+    # Recovery is still in progress: the next launch may restore the backup
+    # only because this marker survived.
+    assert marker.exists()
+
+    store.save(result.notes)
+
+    assert read_json(path) == payload(*recovered)
+    assert not marker.exists()
 
 
 def test_a_valid_main_ignores_a_corrupt_backup(tmp_path):
