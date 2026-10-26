@@ -531,6 +531,36 @@ def _click_first_tab(xtest: XTest, panel: str, snapshot: dict) -> None:
     print(f"smoke-note: clicked first tab at {x},{y}")
 
 
+def _click_until_note_open(
+    xtest: XTest,
+    process: subprocess.Popen[str],
+    panel: str,
+    snapshot: dict,
+    attempts: int = 3,
+) -> str:
+    """One real click should open the note; retry for X server hiccups."""
+    for attempt in range(1, attempts + 1):
+        _click_first_tab(xtest, panel, snapshot)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            _ensure_running(process)
+            windows = _windows_titled(NOTE_TITLE)
+            if windows:
+                return windows[0]
+            time.sleep(0.05)
+        print(f"smoke-note: click attempt {attempt} did not open a note")
+    raise SmokeFailure(f"no window titled {NOTE_TITLE!r} appeared after {attempts} clicks")
+
+
+def _click_editor(xtest: XTest, note_window: str) -> None:
+    """Click inside the text area so Esc is certain to reach the panel."""
+    info = _window_info(note_window)
+    scale = _effective_scale()
+    x = int(info["x"]) + round((112 + 50) * scale)
+    y = int(info["y"]) + round(120 * scale)
+    xtest.click(x, y)
+
+
 def _wait_for_text_on_disk(path: Path, expected: str) -> dict:
     deadline = time.monotonic() + SAVE_TIMEOUT
     last: dict | None = None
@@ -626,8 +656,7 @@ def main() -> int:
                 )
 
             xtest = XTest()
-            _click_first_tab(xtest, fan, fan_snapshot)
-            note_window = _wait_for_window(NOTE_TITLE, app)
+            note_window = _click_until_note_open(xtest, app, fan, fan_snapshot)
             _wait_geometry(note_window, _expected_panel_rect(_effective_scale()))
             _check_dark(note_window, rail=True)
 
@@ -690,8 +719,7 @@ def main() -> int:
                 lambda snapshot: snapshot.get("state") == "fan"
                 and len(snapshot.get("tab_centers") or []) == 2,
             )
-            _click_first_tab(xtest, fan, restart_fan)
-            _wait_for_window(NOTE_TITLE, app)
+            restart_note = _click_until_note_open(xtest, app, fan, restart_fan)
             _wait_dump(
                 restart_dump,
                 app,
@@ -711,6 +739,7 @@ def main() -> int:
                 and snapshot.get("typed") is True
                 and snapshot.get("text") == closed_text,
             )
+            _click_editor(xtest, restart_note)
             xtest.press_escape()
             _wait_for_window(FAN_TITLE, app)
             _wait_dump(
