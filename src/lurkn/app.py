@@ -8,9 +8,10 @@ The deck state machine is explicit: ``strip`` -> ``fan`` -> ``open``. Hover
 timings, peek, drag reorder, delete/undo and All Notes belong to later tickets;
 this module already owns the transitions that survive all of them.
 
-Test hooks (read only when the variables are set; used by
-``scripts/smoke_note.py``):
-
+``LURKNOTES_APP_ID``
+    Override the D-Bus application id. Smoke tests use a unique id so a
+    concurrent run cannot hand its launch to this instance and inspect the
+    wrong windows.
 ``LURKNOTES_TEST_DUMP``
     Write a JSON snapshot of the deck to this path after mapping and after
     opening a note. Includes fan tab centres so the smoke test can click one
@@ -45,7 +46,7 @@ from .windows.strip import WIDTH as STRIP_WIDTH
 from .windows.strip import StripWindow
 from .x11 import Rect, X11, panel_rect, strip_rect
 
-APP_ID = "dev.lurknotes.LurkNotes"
+APP_ID = os.environ.get("LURKNOTES_APP_ID") or "dev.lurknotes.LurkNotes"
 
 STATE_STRIP = "strip"
 STATE_FAN = "fan"

@@ -68,15 +68,23 @@ def _workarea() -> tuple[int, int, int, int]:
     return values[0], values[1], values[2], values[3]
 
 
-def _strip_windows() -> list[str]:
+def _strip_windows(pid: int | None = None) -> list[str]:
     tree = _run("xwininfo", "-root", "-tree")
     pattern = re.compile(r'^\s*(0x[0-9a-f]+)\s+"([^"]*)":')
-    windows: list[str] = []
-    for line in tree.splitlines():
-        match = pattern.match(line)
-        if match and match.group(2) == STRIP_TITLE:
-            windows.append(match.group(1))
-    return windows
+    windows = [
+        match.group(1)
+        for line in tree.splitlines()
+        if (match := pattern.match(line)) and match.group(2) == STRIP_TITLE
+    ]
+    if pid is None:
+        return windows
+    return [window for window in windows if _window_pid(window) == pid]
+
+
+def _window_pid(window: str) -> int | None:
+    output = _run("xprop", "-id", window, "_NET_WM_PID")
+    match = re.search(r"_NET_WM_PID\(CARDINAL\)\s*=\s*(\d+)", output)
+    return int(match.group(1)) if match else None
 
 
 def _window_info(window: str) -> dict[str, int | str]:
@@ -167,10 +175,10 @@ def _stop(process: subprocess.Popen[str]) -> None:
 def main() -> int:
     app: subprocess.Popen[str] | None = None
     try:
-        # Gtk.Application is single-instance: a second process would hand the
-        # launch to an existing one and exit. Checking the window beforehand is
-        # the only reliable way to know the window we inspect is ours — poll()
-        # races with the D-Bus hand-off and can miss the early exit.
+        # Gtk.Application is single-instance keyed by application id. A second
+        # process with the same id would hand the launch to the existing one
+        # and exit, so the smoke test uses its own id and checks that the
+        # window belongs to the process it spawned (_NET_WM_PID).
         existing = _strip_windows()
         if existing:
             raise SmokeFailure(
@@ -182,6 +190,7 @@ def main() -> int:
             env = os.environ.copy()
             env["XDG_DATA_HOME"] = data_home
             env["NO_AT_BRIDGE"] = "1"
+            env["LURKNOTES_APP_ID"] = f"dev.lurknotes.LurkNotes.smoke.s{os.getpid()}"
             app = subprocess.Popen(
                 [str(ROOT / "lurknotes")],
                 cwd=str(ROOT),
@@ -199,7 +208,7 @@ def main() -> int:
                         f"app exited with {app.returncode} before showing the strip\n"
                         f"stdout: {stdout[-2000:]}\nstderr: {stderr[-2000:]}"
                     )
-                windows = _strip_windows()
+                windows = _strip_windows(app.pid)
                 if len(windows) > 1:
                     raise SmokeFailure(f"expected one strip window, found {len(windows)}")
                 if windows:

@@ -83,14 +83,23 @@ def _workarea() -> tuple[int, int, int, int]:
     return values[0], values[1], values[2], values[3]
 
 
-def _windows_titled(title: str) -> list[str]:
+def _windows_titled(title: str, pid: int | None = None) -> list[str]:
     tree = _run("xwininfo", "-root", "-tree")
     pattern = re.compile(r'^\s*(0x[0-9a-f]+)\s+"([^"]*)":')
-    return [
+    windows = [
         match.group(1)
         for line in tree.splitlines()
         if (match := pattern.match(line)) and match.group(2) == title
     ]
+    if pid is None:
+        return windows
+    return [window for window in windows if _window_pid(window) == pid]
+
+
+def _window_pid(window: str) -> int | None:
+    output = _run("xprop", "-id", window, "_NET_WM_PID")
+    match = re.search(r"_NET_WM_PID\(CARDINAL\)\s*=\s*(\d+)", output)
+    return int(match.group(1)) if match else None
 
 
 def _window_info(window: str) -> dict[str, int | str]:
@@ -278,6 +287,7 @@ def _start_app(data_home: Path, dump: Path, type_text: str | None) -> subprocess
             "XDG_CONFIG_HOME": str(data_home / "config"),
             "GDK_BACKEND": "x11",
             "NO_AT_BRIDGE": "1",
+            "LURKNOTES_APP_ID": f"dev.lurknotes.LurkNotes.note-smoke.s{os.getpid()}",
             "LURKNOTES_TEST_DUMP": str(dump),
         }
     )
@@ -320,7 +330,7 @@ def _wait_for_window(
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         _ensure_running(process)
-        windows = _windows_titled(title)
+        windows = _windows_titled(title, process.pid)
         if len(windows) > 1:
             raise SmokeFailure(f"expected one window titled {title!r}, found {len(windows)}")
         if windows:
@@ -544,7 +554,7 @@ def _click_until_note_open(
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             _ensure_running(process)
-            windows = _windows_titled(NOTE_TITLE)
+            windows = _windows_titled(NOTE_TITLE, process.pid)
             if windows:
                 return windows[0]
             time.sleep(0.05)
@@ -574,7 +584,7 @@ def _close_note_with_escape(
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             _ensure_running(process)
-            if _windows_titled(FAN_TITLE):
+            if _windows_titled(FAN_TITLE, process.pid):
                 return
             time.sleep(0.05)
         print(f"smoke-note: Esc attempt {attempt} did not return to the fan")
