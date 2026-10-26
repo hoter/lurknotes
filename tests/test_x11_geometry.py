@@ -1,6 +1,6 @@
 """Geometry math for placing the strip in X11 physical pixels."""
 
-from lurkn.x11 import Rect, strip_rect
+from lurkn.x11 import Rect, panel_rect, strip_rect
 
 
 def test_strip_size_scales_to_physical_pixels():
@@ -39,3 +39,22 @@ def test_strip_geometry_at_fractional_scale():
     strip = strip_rect(workarea, scale=1.5, width=10)
 
     assert strip == Rect(x=1905, y=48, width=15, height=1200)
+
+
+def test_panel_sits_immediately_left_of_the_strip():
+    # Spec §6: the 380-wide fan/panel is flush against the 10-wide strip at
+    # the right edge. At scale 2 the panel is 760 physical px and ends where
+    # the strip begins.
+    workarea = Rect(66, 32, 1374, 928)
+
+    panel = panel_rect(workarea, scale=2, width=380, strip_width=10)
+
+    assert panel == Rect(x=2100, y=64, width=760, height=1856)
+
+
+def test_panel_geometry_at_scale_one():
+    workarea = Rect(0, 32, 1440, 928)
+
+    panel = panel_rect(workarea, scale=1, width=380, strip_width=10)
+
+    assert panel == Rect(x=1050, y=32, width=380, height=928)
