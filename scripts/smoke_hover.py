@@ -45,6 +45,7 @@ def start_app(
 ) -> subprocess.Popen[str]:
     global RUN
     RUN += 1
+    base._mark_onboarded(data_home)
     env = os.environ.copy()
     env.update(
         {
@@ -61,8 +62,11 @@ def start_app(
     )
     if undo_ms is not None:
         env["LURKNOTES_TEST_UNDO_MS"] = str(undo_ms)
+    # Ticket 09: a bare launch expands the fan by design. This suite starts
+    # from the post-login rest state to prove the 120 ms hover path, so it
+    # uses the quiet autostart invocation.
     process = subprocess.Popen(
-        [str(ROOT / "lurknotes")],
+        [str(ROOT / "lurknotes"), "--autostart"],
         cwd=str(ROOT),
         env=env,
         text=True,

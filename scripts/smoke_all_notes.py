@@ -53,6 +53,7 @@ CENTER_TOLERANCE = 4  # physical px
 
 
 def start_app(data_home: Path, dump: Path) -> subprocess.Popen[str]:
+    base._mark_onboarded(data_home)
     env = os.environ.copy()
     env.update(
         {

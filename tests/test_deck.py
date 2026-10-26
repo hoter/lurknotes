@@ -68,6 +68,32 @@ def test_strip_expands_only_after_the_hover_delay() -> None:
     assert deck.state == STATE_FAN
 
 
+def test_expand_now_shows_the_fan_without_waiting_for_hover() -> None:
+    # `lurknotes` with no arguments expands the fan immediately (spec §9.3),
+    # not through the 120 ms hover path.
+    clock = FakeClock()
+    events: list[str] = []
+    deck = machine(clock, on_panel_shown=lambda: events.append("shown"))
+
+    assert deck.expand_now() is True
+    assert deck.state == STATE_FAN
+    assert deck.panel_visible is True
+    assert events == ["shown"]
+
+    # No timer was scheduled at all.
+    assert clock.advance(FAN_DELAY_MS) is None
+    assert deck.state == STATE_FAN
+
+
+def test_expand_now_never_collapses_an_open_note() -> None:
+    clock = FakeClock()
+    deck = machine(clock)
+    deck.open("note-a")
+
+    assert deck.expand_now() is False
+    assert deck.state == STATE_OPEN
+
+
 def test_leaving_the_strip_before_the_delay_cancels_the_expand() -> None:
     clock = FakeClock()
     deck = machine(clock)

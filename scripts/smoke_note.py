@@ -338,7 +338,25 @@ def _app_id() -> str:
     return f"dev.lurknotes.LurkNotes.noteSmoke.s{os.getpid()}"
 
 
+def _mark_onboarded(data_home: Path) -> None:
+    """Returning user for every smoke except the onboarding one.
+
+    The first-launch banner is 64 px tall and would move the fan/editor
+    geometry and the dark-pixel samples this suite asserts. Ticket 09's own
+    smoke exercises the banner against a fresh data dir instead.
+    """
+    marker = Path(data_home) / "lurknotes" / "onboarded"
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("onboarded\n", encoding="utf-8")
+    except OSError:
+        # Storage tests deliberately make the data dir unwritable; onboarding
+        # is outside what they assert.
+        pass
+
+
 def _start_app(data_home: Path, dump: Path, type_text: str | None) -> subprocess.Popen[str]:
+    _mark_onboarded(data_home)
     env = os.environ.copy()
     env.update(
         {

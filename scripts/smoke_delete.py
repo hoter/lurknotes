@@ -36,6 +36,7 @@ from smoke_note import (  # noqa: E402
     _click_center,
     _click_editor,
     _effective_scale,
+    _mark_onboarded,
     _pixel_sampler,
     _raise_for_capture,
     _wait_dump,
@@ -79,6 +80,7 @@ def _app_id() -> str:
 def _start_app(
     data_home: Path, dump: Path, *, undo_ms: int = UNDO_TIMEOUT_MS
 ) -> subprocess.Popen[str]:
+    _mark_onboarded(data_home)
     env = os.environ.copy()
     env.update(
         {
