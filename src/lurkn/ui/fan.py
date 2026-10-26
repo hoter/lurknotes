@@ -59,13 +59,14 @@ class FanPage(Gtk.Box):
             )
             self.rows.append(button)
 
-    def tab_centers(self) -> list[list[float]]:
-        """Tab centres in this page's logical coordinates; used by the smoke test."""
+    def tab_centers(self, relative_to: Gtk.Widget | None = None) -> list[list[float]]:
+        """Tab centres in *relative_to* (default: this page) for smoke clicks."""
         centers: list[list[float]] = []
+        target = relative_to if relative_to is not None else self
         child = self.rows.get_first_child()
         while child is not None:
             if isinstance(child, Gtk.Button):
-                found, bounds = child.compute_bounds(self)
+                found, bounds = child.compute_bounds(target)
                 if found:
                     centers.append(
                         [

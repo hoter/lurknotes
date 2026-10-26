@@ -38,7 +38,17 @@ from gi.repository import Gdk, GdkX11, Gio, GLib, Gtk
 
 from . import strings
 from .notes import Note, find_note
-from .store import Store, StoreError, UnsupportedVersion
+from .retry import Retrier
+from .store import (
+    LOAD_CORRUPT,
+    LOAD_RECOVERED,
+    LOAD_UNSUPPORTED,
+    LoadResult,
+    OverwriteBlocked,
+    ReadOnlyError,
+    Store,
+    StoreError,
+)
 from .ui import install as install_theme
 from .windows.panel import WIDTH as PANEL_WIDTH
 from .windows.panel import PanelWindow
@@ -95,9 +105,18 @@ class LurkNotesApp(Gtk.Application):
         self.current_id: str | None = None
         self.save_source = 0
         self.read_only = False
+        self.overwrite_blocked = False
+        self.unsaved = False
+        self._load_result: LoadResult | None = None
+        self._load_error: str | None = None
         self.strip: StripWindow | None = None
         self.panel: PanelWindow | None = None
         self._workarea: Rect | None = None
+        self._retrier = Retrier(
+            self._retry_save,
+            schedule=GLib.timeout_add,
+            cancel=GLib.source_remove,
+        )
         self._test_dump_path = os.environ.get("LURKNOTES_TEST_DUMP")
         self._test_type = os.environ.get("LURKNOTES_TEST_TYPE")
         self._test_typed = False
@@ -124,6 +143,7 @@ class LurkNotesApp(Gtk.Application):
 
     def do_shutdown(self) -> None:
         self._flush_current()
+        self._retrier.stop()
         if self.x11 is not None:
             self.x11.close()
             self.x11 = None
@@ -132,33 +152,123 @@ class LurkNotesApp(Gtk.Application):
     # -- data ----------------------------------------------------------
 
     def _load_notes(self) -> None:
+        self._load_result = None
+        self._load_error = None
         try:
-            self.notes = self.store.load()
-        except UnsupportedVersion as exc:
-            # Read-only, never overwrite: the full recovery UI is ticket 08.
-            self.read_only = True
-            self.notes = []
-            print(strings.ERROR.format(message=str(exc)), file=sys.stderr)
+            result = self.store.load()
         except (StoreError, OSError) as exc:
+            # Reading failed (permissions, I/O): work in memory, never write
+            # over a file we could not inspect.
             self.read_only = True
             self.notes = []
+            self._load_error = str(exc)
             print(strings.ERROR.format(message=str(exc)), file=sys.stderr)
+            return
+
+        self._load_result = result
+        self.notes = result.notes
+        self.read_only = result.read_only
+        self.overwrite_blocked = result.overwrite_blocked
+        if result.save_error is not None:
+            # Recovered notes are in memory but the write failed; keep the
+            # deck usable and let the retry timer persist it.
+            self.unsaved = True
+        if result.detail:
+            print(strings.ERROR.format(message=result.detail), file=sys.stderr)
+        if result.save_error is not None:
+            print(
+                strings.ERROR.format(
+                    message=f"cannot persist recovered notes: {result.save_error}"
+                ),
+                file=sys.stderr,
+            )
 
     def _save_notes(self) -> bool:
-        if self.read_only:
+        if self.read_only or self.overwrite_blocked:
+            # Read-only files and unconfirmed corrupt files must never be
+            # written by debounce, close, or shutdown.
             return False
         try:
             self.store.save(self.notes)
+        except (OverwriteBlocked, ReadOnlyError) as exc:
+            # The store's own safety gate disagreed with the app state; adopt
+            # it rather than retrying a forbidden write.
+            self.read_only = isinstance(exc, ReadOnlyError)
+            self.overwrite_blocked = isinstance(exc, OverwriteBlocked)
+            print(strings.ERROR.format(message=str(exc)), file=sys.stderr)
+            return False
         except (OSError, StoreError) as exc:
-            # Retry policy and recovery modes are ticket 08; do not crash now.
+            self.unsaved = True
             if self.panel is not None:
                 self.panel.show_save_failed(True)
             print(strings.ERROR.format(message=str(exc)), file=sys.stderr)
+            self._retrier.failed()
+            self._schedule_test_dump()
             return False
+        self.unsaved = False
         if self.panel is not None:
             self.panel.show_save_failed(False)
+        self._retrier.succeeded()
         self._schedule_test_dump()
         return True
+
+    def _retry_save(self) -> None:
+        # The retrier schedules only while ``unsaved`` is true; a successful
+        # attempt clears it, a failing one schedules the next backoff.
+        self._save_notes()
+
+    def _show_storage_status(self) -> None:
+        if self.panel is None:
+            return
+        result = self._load_result
+        if result is None:
+            if self._load_error is not None:
+                self.panel.show_status(
+                    strings.STORAGE_READ_FAILED.format(detail=self._load_error)
+                )
+            return
+
+        if result.status == LOAD_RECOVERED:
+            if result.save_error is not None:
+                self.panel.show_status(strings.STORAGE_RECOVERY_NOT_SAVED)
+                self._retrier.failed()
+                return
+            corrupt = (
+                result.corrupt_path.name
+                if result.corrupt_path is not None
+                else "notes.corrupt-<timestamp>.json"
+            )
+            self.panel.show_status(
+                strings.STORAGE_RECOVERED.format(
+                    count=len(result.notes), corrupt=corrupt
+                ),
+                kind="warning",
+                dismissible=True,
+            )
+        elif result.status == LOAD_CORRUPT:
+            self.panel.show_status(
+                strings.STORAGE_CORRUPT,
+                action_label=strings.STATUS_CONTINUE,
+                on_action=self._confirm_overwrite,
+            )
+        elif result.status == LOAD_UNSUPPORTED:
+            self.panel.show_status(
+                strings.STORAGE_UNSUPPORTED,
+                kind="warning",
+                dismissible=True,
+            )
+
+    def _confirm_overwrite(self) -> None:
+        if not self.store.confirm_overwrite():
+            return
+        self.overwrite_blocked = False
+        print(
+            strings.ERROR.format(
+                message="user confirmed replacing the corrupt notes file"
+            ),
+            file=sys.stderr,
+        )
+        self._schedule_test_dump()
 
     # -- deck ----------------------------------------------------------
 
@@ -177,6 +287,8 @@ class LurkNotesApp(Gtk.Application):
             on_changed=self.on_text_changed,
         )
         self.panel.show_fan(self.notes)
+        self.panel.set_read_only(self.read_only)
+        self._show_storage_status()
 
         # Realize, then mark the windows as non-focusing *before* mapping them.
         # A window that maps with input=True would yank keyboard focus from
@@ -345,12 +457,15 @@ class LurkNotesApp(Gtk.Application):
         if note is None:
             return
         text = self.panel.note.text()
-        if text == note.text:
-            return
-        note.text = text
-        note.updated = time.time()
-        self.panel.refresh_notes(self.notes, note.id)
-        self._save_notes()
+        changed = text != note.text
+        if changed:
+            note.text = text
+            note.updated = time.time()
+            self.panel.refresh_notes(self.notes, note.id)
+        # A previous failure leaves the deck dirty even when the text has not
+        # changed since: close and shutdown must retry before giving up.
+        if changed or self.unsaved:
+            self._save_notes()
 
     # -- test hooks ----------------------------------------------------
 
@@ -375,6 +490,10 @@ class LurkNotesApp(Gtk.Application):
             "cursor_at_end": self.panel.note.cursor_at_end() if is_open else None,
             "rail_width": self.panel.note.rail_width() if is_open else None,
             "typed": self._test_typed,
+            "read_only": self.read_only,
+            "overwrite_blocked": self.overwrite_blocked,
+            "unsaved": self.unsaved,
+            "status": self.panel.status_snapshot(),
         }
         target = Path(self._test_dump_path)
         temporary = target.with_name(target.name + ".tmp")

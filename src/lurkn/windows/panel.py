@@ -10,6 +10,7 @@ from .. import strings
 from ..notes import Note
 from ..ui.fan import FanPage
 from ..ui.note import NotePage
+from ..ui.status import KIND_ERROR, StatusBanner
 
 WIDTH = 380
 
@@ -41,7 +42,14 @@ class PanelWindow(Gtk.Window):
         self.stack.add_named(self.fan, "fan")
         self.stack.add_named(self.note, "note")
         self.stack.set_visible_child_name("fan")
-        self.set_child(self.stack)
+
+        # The status banner sits above both pages: recovery warnings and
+        # "Save failed" must be visible in the fan and in the editor.
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.status = StatusBanner()
+        outer.append(self.status)
+        outer.append(self.stack)
+        self.set_child(outer)
 
         keys = Gtk.EventControllerKey()
         keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
@@ -65,13 +73,29 @@ class PanelWindow(Gtk.Window):
         self.note.set_notes(notes, active_id)
 
     def show_save_failed(self, failed: bool) -> None:
-        self.note.set_save_failed(failed)
+        if failed:
+            self.status.show(strings.SAVE_FAILED_RETRYING, kind=KIND_ERROR)
+        else:
+            self.status.clear()
+
+    def show_status(self, message: str, **kwargs) -> None:
+        self.status.show(message, **kwargs)
+
+    def clear_status(self) -> None:
+        self.status.clear()
+
+    def status_snapshot(self) -> dict:
+        return self.status.snapshot()
+
+    def set_read_only(self, read_only: bool) -> None:
+        self.note.text_view.set_editable(not read_only)
 
     def focus_editor(self) -> None:
         self.note.focus_editor()
 
     def tab_centers(self) -> list[list[float]]:
-        return self.fan.tab_centers()
+        # Window coordinates: the status banner may push the fan down.
+        return self.fan.tab_centers(relative_to=self)
 
     def _on_key_pressed(self, _controller, keyval, _keycode, _state) -> bool:
         if keyval == Gdk.KEY_Escape:

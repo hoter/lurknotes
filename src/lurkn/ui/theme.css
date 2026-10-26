@@ -111,8 +111,25 @@ window.lurk {
   color: #e9e9f1;
 }
 
-.lurk .save-failed {
+.lurk .status-banner {
   background-color: #3a3a46;
   color: #e9e9f1;
-  padding: 4px 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #17171d;
+}
+
+.lurk .status-banner.status-error {
+  background-color: #4a2f35;
+}
+
+.lurk .status-banner.status-warning {
+  background-color: #3a3a46;
+}
+
+.lurk .status-banner .status-text {
+  font-size: 0.9em;
+}
+
+.lurk .status-banner button {
+  padding: 2px 8px;
 }
