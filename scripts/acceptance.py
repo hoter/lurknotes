@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import json
 import os
-import random
 import re
 import shutil
 import statistics
@@ -1330,7 +1329,9 @@ def probe_kill_stress(root: Path, runs: int = KILL_RUNS) -> None:
                 elif text == "SAVE 1" and saw_done:
                     # Kill while the second, large save is in progress. The
                     # first save completed, so notes.json must already exist.
-                    time.sleep(random.uniform(0.001, 0.040))
+                    # A fixed spread keeps the probe deterministic while
+                    # still hitting different points inside the write.
+                    time.sleep(0.001 + (run * 0.00263) % 0.039)
                     process.kill()
                     process.wait(timeout=5)
                     killed = True

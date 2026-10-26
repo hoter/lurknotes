@@ -176,7 +176,7 @@ lurknotes/                  репозиторий
       reorder/search/restart и `kill -9`, но настоящий человеческий день
       остаётся за финальным закрытием.
 - [x] Записать известные дефекты, которые приняли (фокус при сворачивании,
-      полноэкранные приложения, память 134.4 MB, fixed peek pane,
+      полноэкранные приложения, память 134.3 MB, fixed peek pane,
       strip-release cancel, All Notes overlap, manual hotkey/autostart).
 
 ---
