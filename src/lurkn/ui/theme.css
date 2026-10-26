@@ -133,3 +133,20 @@ window.lurk {
 .lurk .status-banner button {
   padding: 2px 8px;
 }
+
+.lurk .undo-toast {
+  background-color: #3a3a46;
+  color: #e9e9f1;
+  border: 1px solid #17171d;
+  border-radius: 8px;
+  padding: 8px 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.lurk .undo-toast label {
+  color: #e9e9f1;
+}
+
+.lurk .undo-toast button {
+  padding: 2px 10px;
+}

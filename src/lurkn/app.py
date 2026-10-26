@@ -5,8 +5,9 @@ implement layer-shell, and only EWMH lets a window sit at the edge, above other
 windows, outside the dock and on every workspace (spec §9.1).
 
 The deck state machine is explicit: ``strip`` -> ``fan`` -> ``open``. Hover
-timings, peek, drag reorder, delete/undo and All Notes belong to later tickets;
-this module already owns the transitions that survive all of them.
+timings, peek, drag reorder and All Notes belong to later tickets; this module
+already owns the transitions that survive all of them, plus the one-slot
+memory undo behind Ctrl+Backspace.
 
 ``LURKNOTES_APP_ID``
     Override the D-Bus application id. Smoke tests use a unique id so a
@@ -18,6 +19,8 @@ this module already owns the transitions that survive all of them.
     through X11.
 ``LURKNOTES_TEST_TYPE``
     Append this text to the open note shortly after it opens, as if typed.
+``LURKNOTES_TEST_UNDO_MS``
+    Shorten the 10 s undo window. Production always uses 10 000 ms.
 """
 
 from __future__ import annotations
@@ -26,7 +29,9 @@ import json
 import os
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import gi
 
@@ -44,6 +49,7 @@ from .notes import (
     discard_all_untouched,
     discard_if_untouched,
     find_note,
+    index_of,
 )
 from .retry import Retrier
 from .store import (
@@ -70,10 +76,91 @@ STATE_FAN = "fan"
 STATE_OPEN = "open"
 
 SAVE_DEBOUNCE_MS = 400
+UNDO_TIMEOUT_MS = 10_000  # spec §4.5, §7.1
 
 # Spec §13: a regular window starts below the GNOME top bar. Only used when
 # Gdk.Monitor.get_workarea is unavailable.
 _TOP_BAR_HEIGHT = 32
+
+
+def _undo_timeout_ms() -> int:
+    """The undo window, shortened only by the explicit smoke-test hook."""
+    raw = os.environ.get("LURKNOTES_TEST_UNDO_MS")
+    if not raw:
+        return UNDO_TIMEOUT_MS
+    try:
+        value = int(raw)
+    except ValueError:
+        return UNDO_TIMEOUT_MS
+    return value if value > 0 else UNDO_TIMEOUT_MS
+
+
+@dataclass
+class DeletedNote:
+    """One deleted note plus everything undo needs to put it back.
+
+    ``session_member`` is captured at delete time: an undone untouched note
+    must still follow ticket 03's "discard when the session created it" rule.
+    """
+
+    note: Note
+    index: int
+    session_member: bool
+
+
+class UndoController:
+    """Exactly one pending delete, with a single timer.
+
+    ``start`` finalises any previous payload (spec §10: a second delete fixes
+    the first) and restarts the countdown. The payload is memory-only; nothing
+    here is persisted and a restart therefore cannot undo anything.
+    """
+
+    def __init__(
+        self,
+        *,
+        timeout_ms: int,
+        schedule: Callable[[int, Callable[[], bool]], object],
+        cancel: Callable[[object], None],
+        on_expire: Callable[[], None] | None = None,
+    ) -> None:
+        self._timeout_ms = timeout_ms
+        self._schedule = schedule
+        self._cancel = cancel
+        self._on_expire = on_expire
+        self._handle: object | None = None
+        self.pending: DeletedNote | None = None
+
+    def start(self, deleted: DeletedNote) -> None:
+        self.finalize()
+        self.pending = deleted
+        self._handle = self._schedule(self._timeout_ms, self._expire)
+
+    def take(self) -> DeletedNote | None:
+        """Hand the payload back once and cancel its timer."""
+        if self.pending is None:
+            return None
+        self._cancel_timer()
+        deleted, self.pending = self.pending, None
+        return deleted
+
+    def finalize(self) -> None:
+        """Drop the payload; after this it can no longer be undone."""
+        self._cancel_timer()
+        self.pending = None
+
+    def _cancel_timer(self) -> None:
+        if self._handle is None:
+            return
+        handle, self._handle = self._handle, None
+        self._cancel(handle)
+
+    def _expire(self) -> bool:
+        self._handle = None
+        self.pending = None
+        if self._on_expire is not None:
+            self._on_expire()
+        return False
 
 
 def _logical_workarea(monitor: Gdk.Monitor) -> Rect:
@@ -128,6 +215,12 @@ class LurkNotesApp(Gtk.Application):
             self._retry_save,
             schedule=GLib.timeout_add,
             cancel=GLib.source_remove,
+        )
+        self._undo = UndoController(
+            timeout_ms=_undo_timeout_ms(),
+            schedule=GLib.timeout_add,
+            cancel=GLib.source_remove,
+            on_expire=self._on_undo_expired,
         )
         self._test_dump_path = os.environ.get("LURKNOTES_TEST_DUMP")
         self._test_type = os.environ.get("LURKNOTES_TEST_TYPE")
@@ -194,6 +287,10 @@ class LurkNotesApp(Gtk.Application):
         if self.shutdown_done:
             return
         self.shutdown_done = True
+        # Undo is memory-only and must not outlive the window: the deleted
+        # note is already absent from the file, so dropping the payload here
+        # is the whole finalisation.
+        self._undo.finalize()
         self._flush_current()
         removed = discard_all_untouched(self.notes, self.session_ids)
         self.current_id = None
@@ -338,6 +435,8 @@ class LurkNotesApp(Gtk.Application):
             on_cycle=self.cycle_note,
             on_escape=self.on_escape,
             on_changed=self.on_text_changed,
+            on_delete=self.delete_current,
+            on_undo=self.undo_delete,
         )
         self.panel.show_fan(self.notes)
         self.panel.set_read_only(self.read_only)
@@ -487,6 +586,81 @@ class LurkNotesApp(Gtk.Application):
         if target_id is not None:
             self.open_note(target_id)
 
+    # -- delete / undo -------------------------------------------------
+
+    def delete_current(self) -> bool:
+        """Ctrl+Backspace: delete the open note and write the file at once.
+
+        The payload handed to the undo slot is the live :class:`Note`, so id,
+        created/updated and the untouched-session property survive an undo
+        unchanged. Read-only decks still delete in memory: ``_save_notes``
+        refuses the write and leaves ticket 08's banner alone.
+        """
+        if self.state != STATE_OPEN or self.current_id is None:
+            return False
+        note = find_note(self.notes, self.current_id)
+        if note is None:
+            return False
+
+        # Capture text still waiting for the 400 ms debounce, but do not save
+        # it separately: the deletion save below writes the deck once.
+        self._flush_current(save=False)
+        index = index_of(self.notes, note.id)
+
+        self.notes.remove(note)
+        self.current_id = None
+        self._save_notes()
+        self._undo.start(
+            DeletedNote(
+                note=note,
+                index=index,
+                session_member=note.id in self.session_ids,
+            )
+        )
+        if self.panel is not None:
+            self.panel.show_toast()
+
+        if self.notes:
+            # The note that took the freed place (or the new last one) keeps
+            # the panel in the open state, ready for the next thought.
+            self.open_note(self.notes[min(index, len(self.notes) - 1)].id)
+        else:
+            # Spec §4.6: an empty deck shows the fan's empty state. The panel
+            # stays mapped, so the toast above it remains clickable.
+            self.state = STATE_FAN
+            if self.panel is not None:
+                self.panel.show_fan(self.notes)
+            self._schedule_test_dump()
+        return True
+
+    def undo_delete(self) -> bool:
+        """Ctrl+Z / Undo: put the pending note back and reopen it.
+
+        This is an ordinary save followed by an ordinary open: the restored
+        note lands at its original array index and the state machine goes
+        back to ``open``. No note is resurrected once the timer expired.
+        """
+        deleted = self._undo.take()
+        if deleted is None:
+            return False
+        if self.panel is not None:
+            self.panel.hide_toast()
+
+        index = max(0, min(deleted.index, len(self.notes)))
+        self.notes.insert(index, deleted.note)
+        if deleted.session_member:
+            # Membership may already be there; keeping it explicit is what
+            # makes an undone untouched note discardable again (spec §5.4).
+            self.session_ids.add(deleted.note.id)
+        self._save_notes()
+        self.open_note(deleted.note.id)
+        return True
+
+    def _on_undo_expired(self) -> None:
+        if self.panel is not None:
+            self.panel.hide_toast()
+        self._schedule_test_dump()
+
     def _leave_current(self) -> None:
         """Flush and, when appropriate, drop the note being left."""
         previous_id = self.current_id
@@ -539,7 +713,7 @@ class LurkNotesApp(Gtk.Application):
             GLib.source_remove(self.save_source)
             self.save_source = 0
 
-    def _flush_current(self) -> None:
+    def _flush_current(self, *, save: bool = True) -> None:
         self._cancel_save_timer()
         if self.current_id is None or self.panel is None:
             return
@@ -554,7 +728,9 @@ class LurkNotesApp(Gtk.Application):
             self.panel.refresh_notes(self.notes, note.id)
         # A previous failure leaves the deck dirty even when the text has not
         # changed since: close and shutdown must retry before giving up.
-        if changed or self.unsaved:
+        # Delete passes save=False because it writes the already-shortened
+        # deck immediately after this snapshot.
+        if save and (changed or self.unsaved):
             self._save_notes()
 
     # -- test hooks ----------------------------------------------------
@@ -597,6 +773,8 @@ class LurkNotesApp(Gtk.Application):
             "overwrite_blocked": self.overwrite_blocked,
             "unsaved": self.unsaved,
             "status": self.panel.status_snapshot(),
+            "toast": self.panel.toast_snapshot(),
+            "undo_pending": self._undo.pending is not None,
         }
         target = Path(self._test_dump_path)
         temporary = target.with_name(target.name + ".tmp")
