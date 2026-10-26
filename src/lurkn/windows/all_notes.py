@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Callable, Sequence
 
-from gi.repository import Gio, GLib, Gtk, Pango
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 from .. import strings
 from ..all_notes import (
@@ -95,6 +95,11 @@ class AllNotesWindow(Gtk.Window):
         self.connect("close-request", self._on_close_request)
         self.connect("destroy", self._on_destroy)
 
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._on_key_pressed)
+        self.add_controller(keys)
+
     # -- showing / refreshing ------------------------------------------
 
     def refresh(self) -> list[SearchHit]:
@@ -123,10 +128,21 @@ class AllNotesWindow(Gtk.Window):
     def _on_close_request(self, *_args) -> bool:
         # Closing All Notes is not quitting LurkNotes: the strip stays alive.
         self.set_visible(False)
+        if self._on_refresh is not None:
+            self._on_refresh()
         return True
 
     def _on_destroy(self, *_args) -> None:
         self._events.unsubscribe(self._on_deck_changed)
+
+    def _on_key_pressed(self, _controller, keyval, _keycode, state) -> bool:
+        if state & Gdk.ModifierType.CONTROL_MASK and keyval in (
+            Gdk.KEY_f,
+            Gdk.KEY_F,
+        ):
+            self.focus_search()
+            return True
+        return False
 
     # -- rendering -----------------------------------------------------
 

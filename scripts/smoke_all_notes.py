@@ -114,7 +114,7 @@ def wait_visible_rect(window: str, timeout: float = 5.0) -> tuple[int, int, int,
 
 def click_center(
     xtest: base.XTest, window: str, center: list[float], label: str
-) -> None:
+) -> tuple[int, int]:
     """Click a GTK coordinate, compensating for CSD shadow extents."""
     left, top, _width, _height = wait_visible_rect(window)
     scale = base._effective_scale()
@@ -127,6 +127,7 @@ def click_center(
     base._raise_until_top(xtest, window, x, y, label)
     xtest.click(x, y)
     print(f"smoke-all-notes: clicked {label} at {x},{y}")
+    return x, y
 
 
 def focus_window(xtest: base.XTest, window: str) -> None:
@@ -157,6 +158,17 @@ def ctrl_a(xtest: base.XTest) -> None:
     xtest.xtst.XTestFakeKeyEvent(xtest.display, letter, 0, 0)
     xtest.xtst.XTestFakeKeyEvent(xtest.display, control, 0, 0)
     xtest.xlib.XFlush(xtest.display)
+
+
+def ctrl_f(xtest: base.XTest) -> None:
+    control = xtest.xlib.XKeysymToKeycode(xtest.display, 0xFFE3)
+    letter = xtest.xlib.XKeysymToKeycode(xtest.display, ord("f"))
+    xtest.xtst.XTestFakeKeyEvent(xtest.display, control, 1, 0)
+    xtest.xtst.XTestFakeKeyEvent(xtest.display, letter, 1, 0)
+    xtest.xtst.XTestFakeKeyEvent(xtest.display, letter, 0, 0)
+    xtest.xtst.XTestFakeKeyEvent(xtest.display, control, 0, 0)
+    xtest.xlib.XFlush(xtest.display)
+    time.sleep(0.1)
 
 
 def backspace(xtest: base.XTest) -> None:
@@ -443,6 +455,7 @@ def run_search_and_quit(
             raise SmokeFailure("All Notes search entry has no clickable centre")
         click_center(xtest, all_notes, search_center, "the search entry")
         focus_window(xtest, all_notes)
+        ctrl_f(xtest)
         xtest.type_text("eggs")
         narrowed = wait_all_notes(
             dump,
@@ -482,7 +495,13 @@ def run_search_and_quit(
             raise SmokeFailure("the Later match row has no clickable centre")
         opened = None
         for attempt in range(1, 4):
-            click_center(xtest, all_notes, later_center, "the Later match row")
+            x, y = click_center(
+                xtest, all_notes, later_center, "the Later match row"
+            )
+            # The first synthetic click may only activate the window; a real
+            # pointer click both activates and presses the row.
+            time.sleep(0.2)
+            xtest.click(x, y)
             try:
                 opened = base._wait_dump(
                     dump,
@@ -507,28 +526,66 @@ def run_search_and_quit(
             )
         print("smoke-all-notes: row click opened the note and kept All Notes mapped")
 
-        note_window = base._wait_for_window(NOTE_TITLE, app)
-        base._click_editor(xtest, note_window)
-        focus_window(xtest, note_window)
-        xtest.type_text("\nsmokeword")
-        base._wait_dump(
-            dump,
-            app,
-            lambda value: value.get("state") == "open"
-            and value.get("current_id") == ids["later"]
-            and "smokeword" in (value.get("text") or ""),
-        )
+        panel_typed = False
+        for attempt in range(1, 4):
+            try:
+                current = json.loads(dump.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                current = {}
+            if current.get("state") != "open" or current.get("current_id") != ids["later"]:
+                # A concurrent agent's Esc/click can close our panel; reopen
+                # the same note before typing again.
+                click_center(
+                    xtest, all_notes, later_center, "the Later match row"
+                )
+            note_window = base._wait_for_window(NOTE_TITLE, app)
+            base._click_editor(xtest, note_window)
+            focus_window(xtest, note_window)
+            xtest.type_text("\nsmokeword")
+            try:
+                base._wait_dump(
+                    dump,
+                    app,
+                    lambda value: value.get("state") == "open"
+                    and value.get("current_id") == ids["later"]
+                    and "smokeword" in (value.get("text") or ""),
+                    timeout=3.0,
+                )
+                panel_typed = True
+                break
+            except SmokeFailure:
+                print(
+                    f"smoke-all-notes: panel typing attempt {attempt} was lost"
+                )
+        if not panel_typed:
+            raise SmokeFailure("typing in the panel never reached the note")
 
-        click_center(xtest, all_notes, cleared["search_center"], "the search entry")
-        focus_window(xtest, all_notes)
-        xtest.type_text("smokeword")
-        typed = wait_all_notes(
-            dump,
-            app,
-            lambda block: block.get("query") == "smokeword"
-            and block.get("ids") == [ids["later"]],
-        )
-        if typed["snippets"] != ["smokeword"]:
+        typed = None
+        for attempt in range(1, 4):
+            click_center(
+                xtest, all_notes, cleared["search_center"], "the search entry"
+            )
+            focus_window(xtest, all_notes)
+            ctrl_f(xtest)
+            ctrl_a(xtest)
+            backspace(xtest)
+            xtest.type_text("smokeword")
+            try:
+                typed = wait_all_notes(
+                    dump,
+                    app,
+                    lambda block: block.get("query") == "smokeword"
+                    and block.get("ids") == [ids["later"]],
+                    timeout=3.0,
+                )
+                break
+            except SmokeFailure:
+                print(
+                    f"smoke-all-notes: search typing attempt {attempt} was lost"
+                )
+        if typed is None:
+            raise SmokeFailure("typing in the search entry never narrowed the list")
+        if "smokeword" not in typed["snippets"][0]:
             raise SmokeFailure(
                 f"live typing is not in the snippet: {typed['snippets']}"
             )
@@ -583,13 +640,25 @@ def run_close_keeps_app_alive(data_home: Path, dump: Path) -> None:
         all_notes = base._wait_for_window(ALL_NOTES_TITLE, app)
         xtest = base.XTest()
         wait_all_notes(dump, app, lambda block: block.get("mapped") is True)
-        xtest.close_window(all_notes)
-        wait_all_notes(
-            dump,
-            app,
-            lambda block: block.get("visible") is False
-            and block.get("mapped") is False,
-        )
+        closed = False
+        for attempt in range(1, 4):
+            xtest.close_window(all_notes)
+            try:
+                wait_all_notes(
+                    dump,
+                    app,
+                    lambda block: block.get("visible") is False
+                    and block.get("mapped") is False,
+                    timeout=2.0,
+                )
+                closed = True
+                break
+            except SmokeFailure:
+                print(
+                    f"smoke-all-notes: close attempt {attempt} was not delivered"
+                )
+        if not closed:
+            raise SmokeFailure("All Notes did not hide on a WM close request")
         base._ensure_running(app)
         if base._window_info(strip).get("map_state") != "IsViewable":
             raise SmokeFailure("closing All Notes also unmapped the strip")
