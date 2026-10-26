@@ -334,9 +334,9 @@ class FanPage(Gtk.Box):
     def _inside_deck(self, x: float, y: float) -> bool:
         """Release-point test in the panel window, not just the fan content.
 
-        The deck is the whole strip+panel surface; the fan's margins and the
-        status banner are still inside it. With no root (unit context) the
-        page bounds are the best available answer.
+        The fan's margins and the status banner are still inside the deck; the
+        10 px strip is a separate window and is not a drop target. With no root
+        (unit context) the page bounds are the best available answer.
         """
         root = self.get_root()
         if isinstance(root, Gtk.Window):
