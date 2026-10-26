@@ -11,13 +11,13 @@
       критерий 11 (fullscreen) записан как accepted deviation с evidence,
       см. [acceptance.md](../acceptance.md#1-criterion-11-fullscreen-does-not-cover-the-strip-new-platform).
 - [x] Измерены холодный и тёплый старт; холодный не дольше 1.5 с — cold
-      median 169 ms, warm `new` delivery median 159 ms / visible 193 ms.
+      median 172 ms, warm `new` delivery median 158 ms / visible 191 ms.
 - [x] Измерена память в простое; не больше 120 МБ или зафиксировано отклонение
       с решением — 134.4 MB median; deviation + Rust-threshold decision
       записаны в acceptance.md.
 - [x] `kill -9` во время записи не приводит к потере или порче файла — 15/15
       runs, main valid, 14/15 backups valid (one kill before the first backup
-      copy), 5 kills left a temp file; structural guarantee documented.
+      copy), 3 kills left a temp file; structural guarantee documented.
 - [x] Проверено, что приложение не открывает сетевых соединений — 6 AF_UNIX
       (D-Bus), 0 AF_INET/AF_INET6; `lsof -a -i` empty.
 - [x] Принятые дефекты записаны: передача фокуса полоске при сворачивании,

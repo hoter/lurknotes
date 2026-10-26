@@ -37,10 +37,13 @@ leaves the temporary tree for inspection.
 ## Suite result
 
 ```
-185 passed in 0.70s
+185 passed in 0.38s
 ```
 
-All eight feature smokes exited 0. Their key assertions are quoted with the
+All eight feature smokes exited 0 on the final rerun. The first rerun of
+`smoke_all_notes.py` hit a test-only dump race (`0x0` GTK size read before
+allocation); the smoke now waits for the documented 720x560 size. That is the
+only change made to an existing smoke, and it does not touch product code. Their key assertions are quoted with the
 corresponding criterion below.
 
 ## Twelve acceptance criteria
@@ -48,17 +51,17 @@ corresponding criterion below.
 | # | Criterion (spec §12) | Verdict | Evidence |
 |---|---|---|---|
 | 1 | Strip visible at the right edge after login; absent from dock and Alt+Tab | **PASS** (EWMH) | `--autostart`: strip `20x1856+2860+64` physical (10x928 logical, right edge of workarea `132,64 2748x1856`, scale 2); `_NET_WM_STATE` ⊇ `ABOVE`, `SKIP_TASKBAR`, `SKIP_PAGER`, `STICKY`; `_NET_WM_DESKTOP=4294967295`; `WM_HINTS input=False`; `_NET_WM_USER_TIME=0`; no focus, no fan, no `notes.json`. Shell-side dock/Alt+Tab filtering cannot be enumerated by a client; GNOME 46 filters `skip_taskbar` (PLATFORM §2/§9). |
-| 2 | Hover expands, leave collapses, `Esc` after click closes | **PASS** | Unit clock: expand exactly at 120 ms, collapse exactly at 400 ms. Live `smoke_hover`: fan mapped in **144 ms**, pointer leave collapsed in **412 ms**, `Esc` closed the open note to the fan, second `Esc` collapsed the focused fan. |
-| 3 | Peek appears ~150 ms and does not flicker while the pointer crosses tabs | **PASS** | Unit clock: no peek at 149 ms, peek at 150 ms. Live `smoke_hover`: peek visible **204 ms** after the pointer move (150 ms timer + snapshot/dump latency), 3 body lines inside the fan, no extra window. Crossing tabs removes the old peek at once and shows only the new one; leaving the tab hides it and keeps the fan. |
-| 4 | Click opens; typed input reaches the editor; saves after ~400 ms | **PASS** | Real XTest typing in `acceptance.py`: 3 runs, text reached the editor and `notes.json` **381 ms** median (379/381/382). `smoke_note`: real tab click, cursor at end, debounce, `SIGKILL`, restart shows the saved text; backup holds the previous file. |
-| 5 | `Ctrl+Alt+N` from another application creates a note on cold and warm start | **PASS** (command path; binding is manual) | Cold `lurknotes new` from `/tmp` opened a note. Warm `lurknotes new` from `/tmp` delivered in **159 ms** median (152–160) and the note was visible in **193 ms** median (181–201); only the primary process remained. `not` installed: the GNOME shortcut is the documented manual step below. |
-| 6 | Delete + undo works for 10 s; no undo after restart | **PASS** | `acceptance.py` with the production 10 000 ms timer: delete reached UI+disk in 182 ms; undo at **9.5 s** restored the note at its index; expiry at **9 944 ms**; `Ctrl+Z` after expiry did nothing; after restart no toast/undo and `Ctrl+Z` did nothing. |
+| 2 | Hover expands, leave collapses, `Esc` after click closes | **PASS** | Unit clock: expand exactly at 120 ms, collapse exactly at 400 ms. Live `smoke_hover`: fan mapped in **138 ms**, pointer leave collapsed in **412 ms**, `Esc` closed the open note to the fan, second `Esc` collapsed the focused fan. |
+| 3 | Peek appears ~150 ms and does not flicker while the pointer crosses tabs | **PASS** | Unit clock: no peek at 149 ms, peek at 150 ms. Live `smoke_hover`: peek visible **205 ms** after the pointer move (150 ms timer + snapshot/dump latency), 3 body lines inside the fan, no extra window. Crossing tabs removes the old peek at once and shows only the new one; leaving the tab hides it and keeps the fan. |
+| 4 | Click opens; typed input reaches the editor; saves after ~400 ms | **PASS** | Real XTest typing in `acceptance.py`: 3 runs, text reached the editor and `notes.json` **382 ms** median (381/384/382). `smoke_note`: real tab click, cursor at end, debounce, `SIGKILL`, restart shows the saved text; backup holds the previous file. |
+| 5 | `Ctrl+Alt+N` from another application creates a note on cold and warm start | **PASS** (command path; binding is manual) | Cold `lurknotes new` from `/tmp` opened a note. Warm `lurknotes new` from `/tmp` delivered in **158 ms** median (148–176) and the note was visible in **191 ms** median (189–199); only the primary process remained. `not` installed: the GNOME shortcut is the documented manual step below. |
+| 6 | Delete + undo works for 10 s; no undo after restart | **PASS** | `acceptance.py` with the production 10 000 ms timer: delete reached UI+disk in 182 ms; undo at **9.5 s** restored the note at its index; expiry at **9 945 ms**; `Ctrl+Z` after expiry did nothing; after restart no toast/undo and `Ctrl+Z` did nothing. |
 | 7 | Drag reorders; same order in deck/rail/All Notes; survives restart | **PASS** | `smoke_drag`: 2 px press opened the note; crossing 5 px raised the tab (`#3d3d4c`) and set `grabbing`; release at the third row reordered and wrote immediately; release outside cancelled byte-identically; restart made fan, rail and All Notes agree. |
 | 8 | Search finds a substring anywhere in the text | **PASS** | `smoke_all_notes`: search narrowed to matches anywhere (including a body substring), match line bolded, clearing restored every note. |
 | 9 | `Ctrl+Alt+A` opens All Notes; row click opens the panel | **PASS** (command path; binding is manual) | `smoke_integration`: warm `all` in 155 ms and cold `all` opened All Notes; second `all` raised the same window. `smoke_all_notes`: row click opened the note and left All Notes mapped. |
 | 10 | Corrupt JSON recovers from backup | **PASS** | `smoke_storage`: corrupt main recovered from `notes.bak.json`, quarantined as `notes.corrupt-<ts>.json`, persisted; restart clean; double corruption shows Continue and writes nothing; after Continue the next save preserves the original; future version stays read-only; unwritable deck works in memory and retries. |
-| 11 | A fullscreen application covers the deck (expected) | **FAIL — accepted deviation** | Focused real fullscreen window (`_NET_WM_STATE_FULLSCREEN`, `_NET_WM_STATE_FOCUSED`) is **below** the strip: `_NET_CLIENT_LIST_STACKING` bottom→top = `0xe00004` (fullscreen), `0xc00004` (strip). Root pixels: strip column `#24242c`, 200 px left `#00aa00` (fullscreen probe surface). The `ABOVE` hint wins over `FULLSCREEN` in Mutter 46. See “Accepted deviations”. |
-| 12 | No light flashes or white areas when the panel opens | **PASS** | `smoke_hover` captured the first fan frame while mapping: no near-white pixel. `acceptance.py`: strip `#24242c`, 0/2320 near-white; first fan frame `#1c1c22`; 33 map-time captures, 0 near-white; brightest sampled pixel `#e9e9f1` (normal primary text); fan visible 147 ms after the bare command. |
+| 11 | A fullscreen application covers the deck (expected) | **FAIL — accepted deviation** | Focused real fullscreen window (`_NET_WM_STATE_FULLSCREEN`, `_NET_WM_STATE_FOCUSED`) is **below** the strip: `_NET_CLIENT_LIST_STACKING` bottom→top = `0xc00004` (fullscreen), `0xe00004` (strip). Root pixels: strip column `#24242c`, 200 px left `#00aa00` (fullscreen probe surface). The `ABOVE` hint wins over `FULLSCREEN` in Mutter 46. See “Accepted deviations”. |
+| 12 | No light flashes or white areas when the panel opens | **PASS** | `smoke_hover` captured the first fan frame while mapping: no near-white pixel. `acceptance.py`: strip `#24242c`, 0/2320 near-white; first fan frame `#1c1c22`; 33 map-time captures, 0 near-white; brightest sampled pixel `#e9e9f1` (normal primary text); fan visible 142 ms after the bare command. |
 
 ## Measurements
 
@@ -66,10 +69,10 @@ corresponding criterion below.
 
 | Measurement | Samples | Median | Min | Max | Target | Verdict |
 |---|---|---|---|---|---|---|
-| Cold start to first mapped strip (`--autostart`) | 166, 165, 173, 171, 182, 169, 169 ms | **169 ms** | 165 ms | 182 ms | ≤ 1500 ms | PASS |
-| Warm `lurknotes new` delivery (second process, cwd `/tmp`) | 160, 152, 159, 160, 159 ms | **159 ms** | 152 ms | 160 ms | ≤ 300 ms | PASS |
-| Warm `lurknotes new` visible in the deck (dump) | 181, 193, 190, 201, 200 ms | **193 ms** | 181 ms | 201 ms | ≤ 300 ms | PASS |
-| Autosave after real typing (from last key to `notes.json`) | 382, 381, 379 ms | **381 ms** | 379 ms | 382 ms | ~400 ms debounce | PASS |
+| Cold start to first mapped strip (`--autostart`) | 172, 176, 164, 154, 177, 171, 180 ms | **172 ms** | 154 ms | 180 ms | ≤ 1500 ms | PASS |
+| Warm `lurknotes new` delivery (second process, cwd `/tmp`) | 176, 158, 158, 148, 150 ms | **158 ms** | 148 ms | 176 ms | ≤ 300 ms | PASS |
+| Warm `lurknotes new` visible in the deck (dump) | 196, 199, 189, 189, 191 ms | **191 ms** | 189 ms | 199 ms | ≤ 300 ms | PASS |
+| Autosave after real typing (from last key to `notes.json`) | 381, 384, 382 ms | **382 ms** | 381 ms | 384 ms | ~400 ms debounce | PASS |
 | Delete to UI + `notes.json` | one run | 182 ms | — | — | immediate | PASS |
 
 The warm visible number includes the app's 150 ms test-dump scheduling and
@@ -80,13 +83,13 @@ is the process wall time from spawn to synchronous hand-off return.
 
 | Run | RSS |
 |---|---|
-| 1 | 134.2 MB |
-| 2 | 134.2 MB |
-| 3 | 134.5 MB |
-| 4 | 134.4 MB |
-| 5 | 134.6 MB |
+| 1 | 134.5 MB |
+| 2 | 134.3 MB |
+| 3 | 134.6 MB |
+| 4 | 134.3 MB |
+| 5 | 134.4 MB |
 
-Median **134.4 MB**, min 134.2, max 134.6. Target in spec §11 is ≤ 120 MB.
+Median **134.4 MB**, min 134.3, max 134.6. Target in spec §11 is ≤ 120 MB.
 Idle CPU measured over 3.0 s per run: **0.00 %** (no busy polling observed).
 
 This is an accepted deviation below, not hidden.
@@ -102,8 +105,8 @@ the second large save after a random 1–40 ms.
 15/15 runs: notes.json parsed as a coherent prior/new deck
 14/15 runs: notes.bak.json present and valid (one kill hit before the first
             backup copy — allowed by spec §5.2's best effort)
- 5/15 runs: a temp file was present after the kill (mid-write evidence)
-main generations: A=12, B=3
+ 3/15 runs: a temp file was present after the kill (mid-write evidence)
+main generations: A=13, B=2
 ```
 
 Structural guarantee (spec §5.2, `src/lurkn/store.py`):
@@ -139,7 +142,7 @@ PLATFORM §4 recipe (`WM_HINTS input=True`, delete `_NET_WM_USER_TIME`,
 The deck ran in `--autostart` rest state with the pointer parked away.
 
 ```
-_NET_CLIENT_LIST_STACKING bottom→top: 0xe00004 (fullscreen), 0xc00004 (strip)
+_NET_CLIENT_LIST_STACKING bottom→top: 0xc00004 (fullscreen), 0xe00004 (strip)
 root pixel at strip column (2870,464): (36,36,44) = #24242c
 root pixel 200 px left (2470,464):     (0,170,0)  = #00aa00
 ```
@@ -239,6 +242,9 @@ window, so a strip release cancels. No data is lost.
 ## Files and hooks
 
 - `scripts/acceptance.py` — deterministic ticket-10 harness described above.
+- `scripts/smoke_all_notes.py` — test-only robustness fix: wait for the
+  720x560 allocation in the dump predicate instead of reading a 0x0 first
+  frame.
 - Test-only environment hooks used by the smokes/acceptance (`app.py` header):
   `LURKNOTES_TEST_DUMP`, `LURKNOTES_TEST_TYPE`, `LURKNOTES_TEST_CONTROL`,
   `LURKNOTES_TEST_PIN_DECK`, `LURKNOTES_TEST_REFUSE_FOCUS`,
