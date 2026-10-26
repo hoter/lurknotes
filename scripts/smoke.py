@@ -165,19 +165,31 @@ def _stop(process: subprocess.Popen[str]) -> None:
 
 
 def main() -> int:
-    with tempfile.TemporaryDirectory(prefix="lurknotes-smoke-") as data_home:
-        env = os.environ.copy()
-        env["XDG_DATA_HOME"] = data_home
-        env["NO_AT_BRIDGE"] = "1"
-        app = subprocess.Popen(
-            [str(ROOT / "lurknotes")],
-            cwd=str(ROOT),
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        try:
+    app: subprocess.Popen[str] | None = None
+    try:
+        # Gtk.Application is single-instance: a second process would hand the
+        # launch to an existing one and exit. Checking the window beforehand is
+        # the only reliable way to know the window we inspect is ours — poll()
+        # races with the D-Bus hand-off and can miss the early exit.
+        existing = _strip_windows()
+        if existing:
+            raise SmokeFailure(
+                "another LurkNotes instance is already running "
+                f"(window {', '.join(existing)}); stop it and retry"
+            )
+
+        with tempfile.TemporaryDirectory(prefix="lurknotes-smoke-") as data_home:
+            env = os.environ.copy()
+            env["XDG_DATA_HOME"] = data_home
+            env["NO_AT_BRIDGE"] = "1"
+            app = subprocess.Popen(
+                [str(ROOT / "lurknotes")],
+                cwd=str(ROOT),
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
             deadline = time.monotonic() + STARTUP_TIMEOUT
             windows: list[str] = []
             while time.monotonic() < deadline:
@@ -252,13 +264,14 @@ def main() -> int:
             print("smoke: OK")
             return 0
 
-        except SmokeFailure as failure:
-            print(f"smoke: FAIL: {failure}", file=sys.stderr)
-            return 1
-        except Exception as failure:  # noqa: BLE001 - report anything as a smoke failure
-            print(f"smoke: FAIL: {type(failure).__name__}: {failure}", file=sys.stderr)
-            return 1
-        finally:
+    except SmokeFailure as failure:
+        print(f"smoke: FAIL: {failure}", file=sys.stderr)
+        return 1
+    except Exception as failure:  # noqa: BLE001 - report anything as a smoke failure
+        print(f"smoke: FAIL: {type(failure).__name__}: {failure}", file=sys.stderr)
+        return 1
+    finally:
+        if app is not None:
             _stop(app)
 
 
