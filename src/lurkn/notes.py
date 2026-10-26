@@ -1,8 +1,7 @@
 """Notes: the domain object and order-preserving list helpers.
 
 Pure Python on purpose. The store serializes :class:`Note` to the JSON shape
-from spec §5.1; the UI reads titles and text from the same object. The 60-char
-title ellipsis and preview rules arrive with ticket 03.
+from spec §5.1; the UI reads titles, previews and text from the same object.
 """
 
 from __future__ import annotations
@@ -11,6 +10,11 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Iterable
+
+from . import strings
+
+TITLE_LIMIT = 60
+PREVIEW_LINES = 6
 
 
 @dataclass
@@ -73,15 +77,49 @@ class Note:
         }
 
     def title(self) -> str:
-        """The first non-empty line; the tab label.
+        """The first non-empty line, trimmed and capped at 60 characters.
 
-        Truncation to 60 characters with an ellipsis is ticket 03's rule, not
-        applied here yet.
+        Spec §5.4: the cap counts the ellipsis as one of the 60 characters.
+        An empty or whitespace-only note is shown as "Untitled"; duplicate
+        titles are fine because the id, never the title, is the identity.
         """
         for line in self.text.splitlines():
-            if line.strip():
-                return line.strip()
-        return ""
+            stripped = line.strip()
+            if stripped:
+                if len(stripped) > TITLE_LIMIT:
+                    return stripped[: TITLE_LIMIT - 1] + "…"
+                return stripped
+        return strings.UNTITLED
+
+    def preview(self) -> list[str]:
+        """Up to six body lines for a read-only peek (spec §5.4).
+
+        The title line is omitted. Blank lines at the edges of the body are
+        dropped so a peek never starts with empty rows; blank lines inside the
+        body are kept, and anything after the sixth line is not shown.
+        """
+        lines = self.text.splitlines()
+        title_index = next(
+            (index for index, line in enumerate(lines) if line.strip()), None
+        )
+        if title_index is None:
+            return []
+        body = lines[title_index + 1 :]
+        start = 0
+        end = len(body)
+        while start < end and not body[start].strip():
+            start += 1
+        while end > start and not body[end - 1].strip():
+            end -= 1
+        return body[start:end][:PREVIEW_LINES]
+
+    def is_untouched(self) -> bool:
+        """Spec §5.4: no text and never edited since creation.
+
+        The caller must also check that the note was created by this process
+        session; timestamps alone cannot tell a loaded empty note apart.
+        """
+        return self.text == "" and self.created == self.updated
 
 
 def index_of(notes: Iterable[Note], note_id: str) -> int:
@@ -97,3 +135,40 @@ def find_note(notes: Iterable[Note], note_id: str) -> Note | None:
         if note.id == note_id:
             return note
     return None
+
+
+def add_at_top(notes: list[Note], note: Note) -> None:
+    """Insert *note* at index 0; the array is the order (spec §5.1)."""
+    notes.insert(0, note)
+
+
+def discard_if_untouched(
+    notes: list[Note], note_id: str, session_ids: set[str]
+) -> Note | None:
+    """Remove the note if it is a session-created untouched note (spec §5.4).
+
+    ``session_ids`` is what keeps a loaded empty note alive: its timestamps
+    look untouched, but this process did not create it. Returns the removed
+    note, or None when the note must stay.
+    """
+    note = find_note(notes, note_id)
+    if note is None or note.id not in session_ids or not note.is_untouched():
+        return None
+    notes.remove(note)
+    return note
+
+
+def cycle_id(notes: list[Note], current_id: str | None, step: int) -> str | None:
+    """The id of the note *step* places away, wrapping at both ends.
+
+    With no note open, forward starts at the first note and backward at the
+    last. An empty deck has nothing to cycle to.
+    """
+    if not notes:
+        return None
+    if current_id is None:
+        return notes[0].id if step >= 0 else notes[-1].id
+    index = index_of(notes, current_id)
+    if index == -1:
+        return notes[0].id if step >= 0 else notes[-1].id
+    return notes[(index + step) % len(notes)].id
