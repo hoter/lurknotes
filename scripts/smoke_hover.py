@@ -148,12 +148,21 @@ def active_window() -> int | None:
 
 
 def fan_windows(app: subprocess.Popen[str]) -> list[str]:
-    return base._windows_titled(base.FAN_TITLE, app.pid)
+    try:
+        return base._windows_titled(base.FAN_TITLE, app.pid)
+    except SmokeFailure:
+        # A concurrent window can be destroyed between enumeration and
+        # xprop, which makes xwininfo fail with BadWindow for the whole tree.
+        return []
 
 
 def fan_viewable(app: subprocess.Popen[str]) -> str | None:
     for window in fan_windows(app):
-        if base._window_info(window).get("map_state") == "IsViewable":
+        try:
+            info = base._window_info(window)
+        except SmokeFailure:
+            continue
+        if info.get("map_state") == "IsViewable":
             return window
     return None
 
@@ -271,9 +280,12 @@ def check_strip_dark(window: str) -> None:
     assert_no_white(window, "the strip")
 
 
-def pid_windows(app: subprocess.Popen[str]) -> set[str]:
+def pid_windows(app: subprocess.Popen[str]) -> set[str] | None:
     """Every root child owned by our process, tooltips/popups included."""
-    tree = base._run("xwininfo", "-root", "-tree")
+    try:
+        tree = base._run("xwininfo", "-root", "-tree")
+    except SmokeFailure:
+        return None
     found: set[str] = set()
     for line in tree.splitlines():
         match = re.match(r"^\s*(0x[0-9a-f]+)\s+", line)
@@ -294,6 +306,10 @@ def check_tooltip_dark(
     )
     known = pid_windows(app)
     for _ in range(3):
+        if known is None:
+            known = pid_windows(app)
+            time.sleep(0.1)
+            continue
         x, y = point_in(fan, *ready["new_button_center"])
         try:
             base._raise_until_top(xtest, fan, x, y, "the + button")
@@ -303,7 +319,10 @@ def check_tooltip_dark(
         xtest.move(x, y)
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
-            for window in pid_windows(app) - known:
+            current = pid_windows(app)
+            if current is None:
+                continue
+            for window in current - known:
                 if base._window_info(window).get("map_state") != "IsViewable":
                     continue
                 xtest.raise_window(window)
@@ -581,48 +600,8 @@ def scroll_to_top(
 
 
 def force_panel_focus(xtest: base.XTest, window: str) -> None:
-    """Test-only focus grant when the shared shell withholds activation.
-
-    ``present()`` is the app's real path (already attempted by the caller);
-    this only makes the Esc checks deterministic when another agent's grab or
-    the shell keeps focus elsewhere. It sets both the X input focus and the
-    root ``_NET_ACTIVE_WINDOW`` the app reads.
-    """
-    import ctypes
-
-    xid = int(window, 16)
-    xlib = xtest.xlib
-    display = xtest.display
-    xlib.XSetInputFocus.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_ulong,
-        ctypes.c_int,
-        ctypes.c_ulong,
-    ]
-    xlib.XSetInputFocus(display, xid, 2, 0)  # RevertToParent, CurrentTime
-    xlib.XInternAtom.restype = ctypes.c_ulong
-    xlib.XChangeProperty.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_ulong,
-        ctypes.c_ulong,
-        ctypes.c_ulong,
-        ctypes.c_int,
-        ctypes.c_int,
-        ctypes.c_void_p,
-    ]
-    value = (ctypes.c_ulong * 1)(xid)
-    xlib.XChangeProperty(
-        display,
-        xlib.XDefaultRootWindow(display),
-        xlib.XInternAtom(display, b"_NET_ACTIVE_WINDOW", 0),
-        33,  # XA_WINDOW
-        32,
-        0,  # PropModeReplace
-        ctypes.cast(value, ctypes.c_void_p),
-        1,
-    )
-    xlib.XFlush(display)
-    time.sleep(0.1)
+    """Test-only focus grant when the shared shell withholds activation."""
+    xtest.focus(window)
 
 
 def ensure_panel_focus(
@@ -911,10 +890,10 @@ def scenario_wheel(
     # Right edge of the fan, past the tabs: wheel goes to the scroller and no
     # tab peek grows while measuring tab heights.
     x, y = point_in(fan, base._window_info(fan)["width"] / base._effective_scale() - 12, 400)
-    base._raise_until_top(xtest, fan, x, y, "the fan scrollbar")
-    xtest.move(x, y)
-    xtest.wheel(5)
     try:
+        base._raise_until_top(xtest, fan, x, y, "the fan scrollbar")
+        xtest.move(x, y)
+        xtest.wheel(5)
         scrolled = snapshot(
             dump,
             app,
@@ -1055,20 +1034,34 @@ def scenario_open_and_escape(
         and bool(snap.get("tab_centers")),
     )
     move_to_tab(xtest, fan, ready["tab_centers"][0])
-    try:
-        click_center(xtest, fan, ready["tab_centers"][0], "the first tab")
-    except SmokeFailure:
+    opened: dict | None = None
+    for attempt in range(1, 4):
+        try:
+            click_center(xtest, fan, ready["tab_centers"][0], "the first tab")
+            opened = snapshot(
+                dump,
+                app,
+                lambda snap: snap.get("state") == "open"
+                and snap.get("text") == original_text,
+                timeout=2.0,
+            )
+            break
+        except SmokeFailure:
+            print(f"smoke-hover: tab click attempt {attempt} did not open the note")
+    if opened is None:
         print(
-            "smoke-hover: the tab click was blocked; emitting the same button "
-            "signal through the control channel"
+            "smoke-hover: real tab clicks did not land; emitting the same "
+            "button signal through the control channel"
         )
         if not control(app, f"tabclick:{note_id}"):
-            raise
-    opened = snapshot(
-        dump,
-        app,
-        lambda snap: snap.get("state") == "open" and snap.get("text") == original_text,
-    )
+            raise SmokeFailure("could not open the note")
+        opened = snapshot(
+            dump,
+            app,
+            lambda snap: snap.get("state") == "open"
+            and snap.get("text") == original_text,
+            timeout=3.0,
+        )
     note = base._wait_for_window(base.NOTE_TITLE, app)
     ensure_panel_focus(xtest, app, note)
     print("smoke-hover: clicking a tab opened the note in the editor with focus")
@@ -1256,6 +1249,7 @@ def main() -> int:
             dump = data_home / "dump.json"
             app = start_app(data_home, dump)
             scenario_startup_and_hover(app, dump, xtest)
+            ensure_fan_open(app)
             fan = fan_viewable(app)
             if fan is None:
                 raise SmokeFailure("the fan vanished before the peek checks")

@@ -142,10 +142,24 @@ def scenario_recover_from_backup(temporary: Path, xtest: base.XTest) -> None:
         )
         try:
             base._raise_for_capture(xtest, fan, "the recovery banner")
-            base._check_dark(fan)
-            print("smoke-storage: recovery banner surface is dark")
         except SmokeFailure as exc:
             print(f"smoke-storage: banner pixel check skipped ({exc})")
+        else:
+            pixel, width, height = base._pixel_sampler(base._xwd_image(fan))
+            banner = pixel(2, 2)
+            if banner not in ((58, 58, 70), (74, 47, 53)):
+                raise SmokeFailure(
+                    f"status banner is #{banner[0]:02x}{banner[1]:02x}"
+                    f"{banner[2]:02x}, expected a dark #3a3a46/#4a2f35 surface"
+                )
+            for y in range(0, height, 8):
+                for x in range(0, width, 8):
+                    red, green, blue = pixel(x, y)
+                    if red > 245 and green > 245 and blue > 245:
+                        raise SmokeFailure(
+                            f"status banner has a near-white pixel at {x},{y}"
+                        )
+            print("smoke-storage: recovery banner surface is dark")
         status = status_of(snapshot)
         if "damaged" not in status["message"] or not status["dismissible"]:
             raise SmokeFailure(f"unexpected recovery banner: {status}")

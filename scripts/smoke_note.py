@@ -90,7 +90,17 @@ def _workarea() -> tuple[int, int, int, int]:
 
 
 def _windows_titled(title: str, pid: int | None = None) -> list[str]:
-    tree = _run("xwininfo", "-root", "-tree")
+    # A concurrent window can disappear between enumeration and xprop, making
+    # xwininfo fail with BadWindow for the whole tree. Retry that transient.
+    tree = ""
+    for attempt in range(3):
+        try:
+            tree = _run("xwininfo", "-root", "-tree")
+            break
+        except SmokeFailure:
+            if attempt == 2:
+                raise
+            time.sleep(0.05)
     pattern = re.compile(r'^\s*(0x[0-9a-f]+)\s+"([^"]*)":')
     windows = [
         match.group(1)
@@ -117,7 +127,15 @@ def _window_pid(window: str) -> int | None:
 
 
 def _window_info(window: str) -> dict[str, int | str]:
-    output = _run("xwininfo", "-id", window)
+    output = ""
+    for attempt in range(3):
+        try:
+            output = _run("xwininfo", "-id", window)
+            break
+        except SmokeFailure:
+            if attempt == 2:
+                raise
+            time.sleep(0.03)
     info: dict[str, int | str] = {}
     fields = {
         "Absolute upper-left X": "x",
@@ -589,6 +607,21 @@ class XTest:
         ]
         self.xlib.XKeysymToKeycode.restype = ctypes.c_uint
         self.xlib.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        self.xlib.XSetInputFocus.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.c_ulong,
+        ]
+        self.xlib.XChangeProperty.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_void_p,
+        ]
         self.xtst.XTestFakeKeyEvent.argtypes = [
             ctypes.c_void_p,
             ctypes.c_uint,
@@ -621,6 +654,29 @@ class XTest:
         if not ok:
             return None
         return root_x.value, root_y.value
+
+    def focus(self, window: str) -> None:
+        """Test-only focus grant: X input focus + root _NET_ACTIVE_WINDOW.
+
+        ``present()`` is the app's real path. Concurrent agents and shell
+        grabs can withhold activation, which would make keyboard smokes flaky;
+        this makes "the panel is focused" true so Esc/Ctrl+Backspace reach it.
+        """
+        xid = int(window, 16)
+        self.xlib.XSetInputFocus(self.display, xid, 2, 0)  # RevertToParent, now
+        value = (ctypes.c_ulong * 1)(xid)
+        self.xlib.XChangeProperty(
+            self.display,
+            self._root,
+            self.xlib.XInternAtom(self.display, b"_NET_ACTIVE_WINDOW", 0),
+            33,  # XA_WINDOW
+            32,
+            0,  # PropModeReplace
+            ctypes.cast(value, ctypes.c_void_p),
+            1,
+        )
+        self.xlib.XFlush(self.display)
+        time.sleep(0.1)
 
     def click(self, x: int, y: int) -> None:
         self.move(x, y)

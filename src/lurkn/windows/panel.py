@@ -11,6 +11,7 @@ from ..notes import Note
 from ..ui.fan import FanPage
 from ..ui.note import NotePage
 from ..ui.status import KIND_ERROR, StatusBanner
+from ..ui.toast import UndoToast
 
 WIDTH = 380
 
@@ -31,10 +32,14 @@ class PanelWindow(Gtk.Window):
         on_hover_tab: Callable[[str], None],
         on_leave_tab: Callable[[str], None],
         on_scrolled: Callable[[], None],
+        on_delete: Callable[[], bool],
+        on_undo: Callable[[], bool],
     ) -> None:
         super().__init__(application=application, title=strings.FAN_TITLE)
         self.on_escape = on_escape
         self.on_cycle = on_cycle
+        self.on_delete = on_delete
+        self.on_undo = on_undo
         self.set_decorated(False)
         self.set_resizable(False)
         self.set_default_size(WIDTH, height)
@@ -63,7 +68,14 @@ class PanelWindow(Gtk.Window):
         self.status = StatusBanner()
         outer.append(self.status)
         outer.append(self.stack)
-        self.set_child(outer)
+
+        # The toast overlays the whole panel, so it stays put in the fan and
+        # in the editor and survives any fan/rail rebuild on autosave.
+        self.toast = UndoToast(self._on_undo_clicked)
+        overlay = Gtk.Overlay()
+        overlay.set_child(outer)
+        overlay.add_overlay(self.toast)
+        self.set_child(overlay)
 
         keys = Gtk.EventControllerKey()
         keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
@@ -85,6 +97,18 @@ class PanelWindow(Gtk.Window):
     def refresh_notes(self, notes: Sequence[Note], active_id: str | None) -> None:
         self.fan.set_notes(notes)
         self.note.set_notes(notes, active_id)
+
+    def show_toast(self) -> None:
+        self.toast.reveal()
+
+    def hide_toast(self) -> None:
+        self.toast.conceal()
+
+    def toast_snapshot(self) -> dict:
+        return self.toast.snapshot()
+
+    def _on_undo_clicked(self) -> None:
+        self.on_undo()
 
     def show_save_failed(self, failed: bool) -> None:
         if failed:
@@ -142,11 +166,18 @@ class PanelWindow(Gtk.Window):
         self.fan.activate_collapse()
 
     def _on_key_pressed(self, _controller, keyval, _keycode, state) -> bool:
+        control = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        # Spec §7.3: capture phase suppresses the TextView's own Ctrl+Backspace
+        # word deletion and its default Ctrl+Z handling.
+        if control and keyval == Gdk.KEY_BackSpace:
+            return self.on_delete()
+        if control and keyval in (Gdk.KEY_z, Gdk.KEY_Z):
+            return self.on_undo()
         if keyval == Gdk.KEY_Escape:
             return self.on_escape()
         # Spec §7.3: Ctrl+Tab / Ctrl+Shift+Tab cycle notes. GTK reports
         # Shift+Tab as ISO_Left_Tab, so both keyvals mean "previous".
-        if state & Gdk.ModifierType.CONTROL_MASK and keyval in (
+        if control and keyval in (
             Gdk.KEY_Tab,
             Gdk.KEY_KP_Tab,
             Gdk.KEY_ISO_Left_Tab,
