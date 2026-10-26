@@ -18,6 +18,7 @@ from lurkn.app import (
     LurkNotesApp,
     UndoController,
 )
+from lurkn.events import DeckChanged
 from lurkn.notes import Note, discard_if_untouched
 
 
@@ -133,6 +134,7 @@ def make_app(
     app.x11 = None
     app._test_dump_path = None
     app._test_type = None
+    app.deck_changed_event = DeckChanged()
     app._retrier = NullRetrier()
     scheduler = FakeScheduler()
     app._undo = UndoController(

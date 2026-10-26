@@ -5,9 +5,9 @@ implement layer-shell, and only EWMH lets a window sit at the edge, above other
 windows, outside the dock and on every workspace (spec §9.1).
 
 The deck state machine is explicit: ``strip`` -> ``fan`` -> ``open``. Hover
-timings, peek, drag reorder and All Notes belong to later tickets; this module
-already owns the transitions that survive all of them, plus the one-slot
-memory undo behind Ctrl+Backspace.
+timings, peek and drag reorder belong to later tickets; this module already
+owns the transitions that survive all of them, the one-slot memory undo behind
+Ctrl+Backspace, and the All Notes window.
 
 ``LURKNOTES_APP_ID``
     Override the D-Bus application id. Smoke tests use a unique id so a
@@ -19,6 +19,9 @@ memory undo behind Ctrl+Backspace.
     through X11.
 ``LURKNOTES_TEST_TYPE``
     Append this text to the open note shortly after it opens, as if typed.
+``LURKNOTES_TEST_OPEN_ALL``
+    Open All Notes once the deck is mapped. Ticket 09 will replace this with
+    ``lurknotes all``; until then it lets the All Notes smoke test run.
 ``LURKNOTES_TEST_UNDO_MS``
     Shorten the 10 s undo window. Production always uses 10 000 ms.
 """
@@ -42,6 +45,7 @@ gi.require_version("GdkX11", "4.0")
 from gi.repository import Gdk, GdkX11, Gio, GLib, Gtk
 
 from . import strings
+from .events import DeckChanged
 from .notes import (
     Note,
     add_at_top,
@@ -63,11 +67,12 @@ from .store import (
     StoreError,
 )
 from .ui import install as install_theme
+from .windows.all_notes import AllNotesWindow
 from .windows.panel import WIDTH as PANEL_WIDTH
 from .windows.panel import PanelWindow
 from .windows.strip import WIDTH as STRIP_WIDTH
 from .windows.strip import StripWindow
-from .x11 import Rect, X11, panel_rect, strip_rect
+from .x11 import Rect, X11, centered_position, panel_rect, strip_rect
 
 APP_ID = os.environ.get("LURKNOTES_APP_ID") or "dev.lurknotes.LurkNotes"
 
@@ -210,6 +215,13 @@ class LurkNotesApp(Gtk.Application):
         self._load_error: str | None = None
         self.strip: StripWindow | None = None
         self.panel: PanelWindow | None = None
+        self.all_notes: AllNotesWindow | None = None
+        self._all_notes_placed = False
+        self._all_notes_place_tries = 0
+        # Ticket 07: read-only views (All Notes) subscribe here instead of
+        # polling. Every mutation path calls ``deck_changed()``; ticket 06
+        # (reorder) must do the same when it lands.
+        self.deck_changed_event = DeckChanged()
         self._workarea: Rect | None = None
         self._retrier = Retrier(
             self._retry_save,
@@ -225,6 +237,7 @@ class LurkNotesApp(Gtk.Application):
         self._test_dump_path = os.environ.get("LURKNOTES_TEST_DUMP")
         self._test_type = os.environ.get("LURKNOTES_TEST_TYPE")
         self._test_typed = False
+        self._test_open_all = os.environ.get("LURKNOTES_TEST_OPEN_ALL") == "1"
 
     # -- lifecycle -----------------------------------------------------
 
@@ -256,6 +269,7 @@ class LurkNotesApp(Gtk.Application):
         # Ticket 03: flush, drop untouched session notes, save once. Ticket 08:
         # no retry timer may outlive the main loop.
         self._shutdown_deck()
+        self.deck_changed_event.clear()
         self._retrier.stop()
         if self.x11 is not None:
             self.x11.close()
@@ -461,6 +475,109 @@ class LurkNotesApp(Gtk.Application):
         self.strip.set_visible(True)
         self.panel.set_visible(True)
         self.state = STATE_FAN
+        if self._test_open_all:
+            GLib.timeout_add(250, self._open_all_notes_for_test)
+
+    def _open_all_notes_for_test(self) -> bool:
+        self.show_all_notes()
+        return False
+
+    def show_all_notes(self) -> None:
+        """Show (or raise) the All Notes window; ticket 09's ``all`` uses this."""
+        if self.strip is None:
+            self._build_deck()
+        if self.all_notes is None:
+            self.all_notes = AllNotesWindow(
+                self,
+                notes_provider=self.notes_for_view,
+                on_open=self.open_note,
+                events=self.deck_changed_event,
+                on_refresh=lambda: self._schedule_test_dump(delay=80),
+            )
+            self.all_notes.connect("map", self._on_all_notes_map)
+        self.all_notes.refresh()
+        self.all_notes.present()
+        self.all_notes.focus_search()
+        self._schedule_test_dump(delay=100)
+
+    def _on_all_notes_map(self, *_args) -> None:
+        # GNOME places a plain X11 window at the workarea corner. Spec §6 says
+        # All Notes opens centred; wait for GTK's shadow extents, then move it.
+        if not self._all_notes_placed:
+            GLib.timeout_add(50, self._place_all_notes)
+
+    def _place_all_notes(self) -> bool:
+        if (
+            self.all_notes is None
+            or self.x11 is None
+            or self._workarea is None
+        ):
+            return False
+        surface = self.all_notes.get_surface()
+        if surface is None:
+            return False
+        xid = GdkX11.X11Surface.get_xid(surface)
+        width = self.all_notes.get_width()
+        height = self.all_notes.get_height()
+        if width <= 0 or height <= 0:
+            return False
+        extents = self.x11.frame_extents(xid)
+        if extents == (0, 0, 0, 0) and self._all_notes_place_tries < 5:
+            # GTK may set _GTK_FRAME_EXTENTS a frame after the map.
+            self._all_notes_place_tries += 1
+            GLib.timeout_add(50, self._place_all_notes)
+            return False
+        x, y = centered_position(
+            self._workarea,
+            surface.get_scale(),
+            width,
+            height,
+            extents,
+        )
+        self.x11.move(xid, x, y)
+        self._all_notes_placed = True
+        return False
+
+    def notes_for_view(self) -> list[Note]:
+        """The deck as read-only views must see it (All Notes, spec §4.3).
+
+        The open note's text comes straight from the editor buffer, so what is
+        being typed appears in All Notes before the 400 ms autosave runs. All
+        other notes are the app's own objects; views never mutate them.
+        """
+        live_id = (
+            self.current_id
+            if self.state == STATE_OPEN and self.panel is not None
+            else None
+        )
+        if live_id is None:
+            return list(self.notes)
+        live_text = self.panel.note.text()
+        now = time.time()
+        snapshot: list[Note] = []
+        for note in self.notes:
+            if note.id == live_id and live_text != note.text:
+                snapshot.append(
+                    Note(
+                        id=note.id,
+                        text=live_text,
+                        created=note.created,
+                        updated=now,
+                    )
+                )
+            else:
+                snapshot.append(note)
+        return snapshot
+
+    def deck_changed(self) -> None:
+        """Tell read-only views that the deck changed.
+
+        Called from every mutation path in this module (text, create, delete,
+        undo). Ticket 06's reorder must call this after it touches
+        ``self.notes`` so All Notes stays in sync without a reopen.
+        """
+        self.deck_changed_event.notify()
+        self._schedule_test_dump(delay=100)
 
     def _xid(self, window: Gtk.Window) -> int | None:
         surface = window.get_surface()
@@ -546,6 +663,7 @@ class LurkNotesApp(Gtk.Application):
         # new note's place at the top.
         self._save_notes()
         self.open_note(note.id)
+        self.deck_changed()
 
     def open_note(self, note_id: str) -> None:
         note = find_note(self.notes, note_id)
@@ -610,6 +728,7 @@ class LurkNotesApp(Gtk.Application):
         self.notes.remove(note)
         self.current_id = None
         self._save_notes()
+        self.deck_changed()
         self._undo.start(
             DeletedNote(
                 note=note,
@@ -653,6 +772,7 @@ class LurkNotesApp(Gtk.Application):
             # makes an undone untouched note discardable again (spec §5.4).
             self.session_ids.add(deleted.note.id)
         self._save_notes()
+        self.deck_changed()
         self.open_note(deleted.note.id)
         return True
 
@@ -673,6 +793,7 @@ class LurkNotesApp(Gtk.Application):
         if removed is not None:
             # Spec §5.4: the deletion is written at once, not debounced.
             self._save_notes()
+            self.deck_changed()
         self.current_id = None
 
     def on_escape(self) -> bool:
@@ -702,6 +823,9 @@ class LurkNotesApp(Gtk.Application):
         self.save_source = GLib.timeout_add(
             SAVE_DEBOUNCE_MS, self._on_save_timeout
         )
+        # All Notes reads the live editor buffer through ``notes_for_view``,
+        # so it sees the keystroke before the autosave timer fires.
+        self.deck_changed()
 
     def _on_save_timeout(self) -> bool:
         self.save_source = 0
@@ -726,6 +850,7 @@ class LurkNotesApp(Gtk.Application):
             note.text = text
             note.updated = time.time()
             self.panel.refresh_notes(self.notes, note.id)
+            self.deck_changed()
         # A previous failure leaves the deck dirty even when the text has not
         # changed since: close and shutdown must retry before giving up.
         # Delete passes save=False because it writes the already-shortened
@@ -773,6 +898,11 @@ class LurkNotesApp(Gtk.Application):
             "overwrite_blocked": self.overwrite_blocked,
             "unsaved": self.unsaved,
             "status": self.panel.status_snapshot(),
+            "all_notes": (
+                self.all_notes.snapshot()
+                if self.all_notes is not None
+                else None
+            ),
             "toast": self.panel.toast_snapshot(),
             "undo_pending": self._undo.pending is not None,
         }
