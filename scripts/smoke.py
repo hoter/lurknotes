@@ -142,6 +142,17 @@ def _check_no_focus_hints(properties: str) -> None:
         raise SmokeFailure("_NET_WM_USER_TIME is not 0; mapping may activate the strip")
 
 
+def _ensure_running(process: subprocess.Popen[str]) -> None:
+    if process.poll() is None:
+        return
+    stdout, stderr = process.communicate(timeout=5)
+    raise SmokeFailure(
+        f"app exited with {process.returncode} while the strip was checked; "
+        "another LurkNotes instance may already be running\n"
+        f"stdout: {stdout[-2000:]}\nstderr: {stderr[-2000:]}"
+    )
+
+
 def _stop(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
         return
@@ -225,6 +236,7 @@ def main() -> int:
             states = _check_states(properties)
             desktop = _check_desktop(properties)
             _check_no_focus_hints(properties)
+            _ensure_running(app)
 
             print(f"smoke: window {window} {STRIP_TITLE!r}")
             print(
