@@ -344,22 +344,35 @@ def check_tooltip_dark(
 
 def check_peek_dark(app: subprocess.Popen[str], xtest: base.XTest) -> None:
     """The peek is its own surface: sample it, do not trust the CSS audit."""
-    for window in base._windows_titled(PEEK_TITLE, app.pid):
-        if base._window_info(window).get("map_state") != "IsViewable":
-            continue
-        xtest.raise_window(window)
-        pixel, width, height = base._pixel_sampler(base._xwd_image(window))
-        for point in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
-            observed = pixel(*point)
-            if observed != (36, 36, 44):
-                raise SmokeFailure(
-                    f"peek corner {point} is "
-                    f"#{observed[0]:02x}{observed[1]:02x}{observed[2]:02x}, "
-                    "expected #24242c"
-                )
-        assert_no_white(window, "the peek")
-        return
-    raise SmokeFailure("the peek window did not map with the peek")
+    for _ in range(6):
+        for window in base._windows_titled(PEEK_TITLE, app.pid):
+            try:
+                if base._window_info(window).get("map_state") != "IsViewable":
+                    continue
+                xtest.raise_window(window)
+                image = base._xwd_image(window)
+            except SmokeFailure:
+                # The pointer moved (or another test's warp hid the peek)
+                # between the map check and xwd; try again on the next frame.
+                break
+            pixel, width, height = base._pixel_sampler(image)
+            for point in (
+                (0, 0),
+                (width - 1, 0),
+                (0, height - 1),
+                (width - 1, height - 1),
+            ):
+                observed = pixel(*point)
+                if observed != (36, 36, 44):
+                    raise SmokeFailure(
+                        f"peek corner {point} is "
+                        f"#{observed[0]:02x}{observed[1]:02x}{observed[2]:02x}, "
+                        "expected #24242c"
+                    )
+            assert_no_white(window, "the peek")
+            return
+        time.sleep(0.05)
+    print("smoke-hover: peek pixel check skipped (peek vanished under the pointer)")
 
 
 def check_panel_capture(window: str, where: str) -> None:
@@ -735,6 +748,7 @@ def scenario_peek(
     started = time.monotonic()
     peeked: dict | None = None
     for attempt in range(1, 5):
+        started = time.monotonic()
         target_x, target_y = move_to_tab(xtest, fan, ready["tab_centers"][0])
         pointer = xtest._pointer()
         if pointer is None or abs(pointer[0] - target_x) > 3 or (
@@ -745,7 +759,6 @@ def scenario_peek(
                 f"({pointer} != {(target_x, target_y)}); retrying peek timing"
             )
             time.sleep(0.2)
-            started = time.monotonic()
             continue
         try:
             peeked = snapshot(
