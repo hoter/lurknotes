@@ -84,6 +84,9 @@ class Store:
         self.path = Path(path) if path is not None else default_path()
         self.tmp_path = self.path.with_name(self.path.name + ".tmp")
         self.backup_path = self.path.with_name(self.path.stem + ".bak.json")
+        self.backup_tmp_path = self.path.with_name(
+            self.path.stem + ".bak.json.tmp"
+        )
         self.last_save_error: Exception | None = None
         self.last_quarantine_path: Path | None = None
         self._read_only = False
@@ -299,22 +302,30 @@ class Store:
 
             if self.path.exists():
                 try:
-                    shutil.copyfile(self.path, self.backup_path)
+                    # Copy through a temp name so a short read or a full disk
+                    # never truncates the previous *valid* backup: either the
+                    # new copy lands atomically or the old backup survives.
+                    shutil.copyfile(self.path, self.backup_tmp_path)
+                    os.rename(self.backup_tmp_path, self.backup_path)
                 except OSError:
                     # Best effort per spec: the new data is more important than
                     # last save's backup.
-                    pass
+                    try:
+                        self.backup_tmp_path.unlink()
+                    except OSError:
+                        pass
 
             os.replace(self.tmp_path, self.path)
             self._fsync_directory()
             self.last_save_error = None
         except BaseException:
-            # Ordinary failures must not leave a half-written tmp file to
+            # Ordinary failures must not leave a half-written temp file to
             # confuse the next save. The old main and backup stay untouched.
-            try:
-                self.tmp_path.unlink()
-            except OSError:
-                pass
+            for leftover in (self.tmp_path, self.backup_tmp_path):
+                try:
+                    leftover.unlink()
+                except OSError:
+                    pass
             raise
 
     def _quarantine_main(self) -> None:

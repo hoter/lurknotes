@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -109,6 +110,29 @@ def test_first_save_does_not_create_a_backup(tmp_path):
     store.save([note("a", "first")])
 
     assert not (tmp_path / "notes.bak.json").exists()
+
+
+def test_a_failed_backup_copy_leaves_the_previous_backup_valid(tmp_path, monkeypatch):
+    """A failure while copying the backup must not truncate the old one."""
+    store = Store(tmp_path / "notes.json")
+    store.save([note("a", "old")])
+    store.save([note("a", "safe")])
+    backup = tmp_path / "notes.bak.json"
+    before_backup = backup.read_bytes()
+
+    def partial_copy(_source, destination):
+        Path(destination).write_text('{"version": 1, "notes"', encoding="utf-8")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(shutil, "copyfile", partial_copy)
+
+    # The backup update is best effort: the new deck is still written.
+    store.save([note("a", "new")])
+
+    assert read_json(tmp_path / "notes.json")["notes"][0]["text"] == "new"
+    assert backup.read_bytes() == before_backup
+    assert not (tmp_path / "notes.bak.json.tmp").exists()
+    assert not (tmp_path / "notes.json.tmp").exists()
 
 
 def test_save_leaves_no_temp_file_and_writes_valid_json(tmp_path):
