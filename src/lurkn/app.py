@@ -43,14 +43,14 @@ def _logical_workarea(monitor: Gdk.Monitor) -> Rect:
 
 
 class LurkNotesApp(Gtk.Application):
-    def __init__(self, action: str = "") -> None:
+    def __init__(self, action: str = "", x11: X11 | None = None) -> None:
         super().__init__(
             application_id=APP_ID,
             flags=Gio.ApplicationFlags.FLAGS_NONE,
         )
         # new|all are accepted now and wired to deck actions in a later ticket.
         self.action = action
-        self.x11: X11 | None = None
+        self.x11 = x11
         self.strip: StripWindow | None = None
         self._workarea: Rect | None = None
 
@@ -61,7 +61,6 @@ class LurkNotesApp(Gtk.Application):
         settings = Gtk.Settings.get_default()
         if settings is not None:
             settings.set_property("gtk-application-prefer-dark-theme", True)
-        self.x11 = X11()
 
     def do_activate(self) -> None:
         if self.strip is None:

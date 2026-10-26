@@ -21,14 +21,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    from .app import LurkNotesApp
+    from .x11 import X11
 
     try:
-        app = LurkNotesApp(action=action)
-        return app.run([sys.argv[0]])
+        x11 = X11()
     except RuntimeError as exc:
         print(strings.ERROR.format(message=str(exc)), file=sys.stderr)
         return 1
+
+    from .app import LurkNotesApp
+
+    app = LurkNotesApp(action=action, x11=x11)
+    return app.run([sys.argv[0]])
 
 
 if __name__ == "__main__":
