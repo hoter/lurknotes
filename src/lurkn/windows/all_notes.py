@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from typing import Callable, Sequence
 
-from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+from gi.repository import Gdk, GdkX11, Gio, GLib, Gtk, Pango
 
 from .. import strings
-from ..all_notes import (
+from ..search import (
     AllNotesModel,
     SearchHit,
     format_updated,
@@ -23,9 +23,32 @@ from ..all_notes import (
 )
 from ..events import DeckChanged
 from ..notes import Note
+from ..x11 import centered_position
 
 WIDTH = 720
 HEIGHT = 560
+
+
+def center_in_workarea(window: Gtk.Window, x11, workarea) -> bool | None:
+    """Move *window* to the workarea centre; report whether extents are known.
+
+    Returns ``None`` when there is nothing to place yet (no surface or no
+    allocation), ``False`` when GTK has not published CSD shadow extents yet,
+    and ``True`` once the final centred position is known. The caller retries
+    on ``False`` because the first pass already put the window at the centre.
+    """
+    surface = window.get_surface()
+    if surface is None:
+        return None
+    xid = GdkX11.X11Surface.get_xid(surface)
+    width = window.get_width()
+    height = window.get_height()
+    if width <= 0 or height <= 0:
+        return None
+    extents = x11.frame_extents(xid)
+    x, y = centered_position(workarea, surface.get_scale(), width, height, extents)
+    x11.move(xid, x, y)
+    return extents != (0, 0, 0, 0)
 
 
 class AllNotesWindow(Gtk.Window):

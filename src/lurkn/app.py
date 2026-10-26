@@ -7,50 +7,25 @@ windows, outside the dock and on every workspace (spec §9.1).
 The deck state machine is explicit: ``strip`` -> ``fan`` -> ``open``, with
 peek as a read-only pane inside the fan. The pure machine (hover
 delays, peek, collapse) lives in :mod:`lurkn.deck`; this module maps its states
-onto GTK widgets and X11 hints, owns the one-slot memory undo behind
-Ctrl+Backspace, and the All Notes window. Drag reorder belongs to ticket 06.
+onto GTK widgets and X11 hints, and owns the All Notes window. The one-slot
+memory undo behind Ctrl+Backspace lives in :mod:`lurkn.undo`; drag reorder
+belongs to ticket 06.
 
 ``LURKNOTES_APP_ID``
     Override the D-Bus application id. Smoke tests use a unique id so a
     concurrent run cannot hand its launch to this instance and inspect the
     wrong windows.
-``LURKNOTES_TEST_DUMP``
-    Write a JSON snapshot of the deck to this path after mapping and after
-    opening a note. Includes fan tab centres so the smoke test can click one
-    through X11.
-``LURKNOTES_TEST_TYPE``
-    Append this text to the open note shortly after it opens, as if typed.
-``LURKNOTES_TEST_CONTROL``
-    Register the ``control`` GAction the smoke test uses when another agent's
-    ABOVE window owns the screen edge. Off in production: no extra action and
-    no polling.
-``LURKNOTES_TEST_OPEN_ALL``
-    Open All Notes once the deck is mapped. Kept for the ticket 07 smoke; the
-    real path is now ``lurknotes all``.
-``LURKNOTES_TEST_PIN_DECK``
-    Do not collapse the fan when the pointer leaves. Smokes for other tickets
-    pin the deck so an unrelated pointer warp cannot hide the panel mid-test.
-``LURKNOTES_TEST_REFUSE_FOCUS``
-    Pretend activation was refused so the live smoke can prove the "Click to
-    type" hint and the first-click grant on a machine where ``present()``
-    normally succeeds.
-``LURKNOTES_TEST_NO_HOVER``
-    Ignore pointer-enter events. Lets the integration smoke prove that a bare
-    ``lurknotes`` expands the fan itself, on a desktop where other agents move
-    the shared pointer.
-``LURKNOTES_TEST_UNDO_MS``
-    Shorten the 10 s undo window. Production always uses 10 000 ms.
+
+Test-only hooks (dump, control action, deterministic typing, pin/refuse/no
+hover, shortened undo) live in :mod:`lurkn.testhooks` and are documented there.
+They are env-gated and absent from production behaviour.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable
 
 import gi
 
@@ -61,7 +36,9 @@ gi.require_version("GdkX11", "4.0")
 from gi.repository import Gdk, GdkX11, Gio, GLib, Gtk
 
 from . import autostart as autostart_file
+from . import storage_ui
 from . import strings
+from . import testhooks
 from .cli import CliError, Command, parse
 from .deck import (
     STATE_FAN,
@@ -84,128 +61,26 @@ from .notes import (
 from .onboarding import mark_onboarded, needs_onboarding
 from .retry import Retrier
 from .store import (
-    LOAD_CORRUPT,
-    LOAD_RECOVERED,
-    LOAD_UNSUPPORTED,
     LoadResult,
     OverwriteBlocked,
     ReadOnlyError,
     Store,
     StoreError,
 )
+from .testhooks import TestHooks
 from .ui import install as install_theme
-from .windows.all_notes import AllNotesWindow
+from .undo import DeletedNote, UndoController
+from .windows.all_notes import AllNotesWindow, center_in_workarea
 from .windows.panel import WIDTH as PANEL_WIDTH
 from .windows.panel import PanelWindow
+from .windows.placement import Placement, logical_workarea
 from .windows.strip import WIDTH as STRIP_WIDTH
 from .windows.strip import StripWindow
-from .x11 import Rect, X11, centered_position, panel_rect, strip_rect
+from .x11 import Rect, X11
 
 APP_ID = os.environ.get("LURKNOTES_APP_ID") or "dev.lurknotes.LurkNotes"
 
 SAVE_DEBOUNCE_MS = 400
-UNDO_TIMEOUT_MS = 10_000  # spec §4.5, §7.1
-
-# Spec §13: a regular window starts below the GNOME top bar. Only used when
-# Gdk.Monitor.get_workarea is unavailable.
-_TOP_BAR_HEIGHT = 32
-
-
-def _undo_timeout_ms() -> int:
-    """The undo window, shortened only by the explicit smoke-test hook."""
-    raw = os.environ.get("LURKNOTES_TEST_UNDO_MS")
-    if not raw:
-        return UNDO_TIMEOUT_MS
-    try:
-        value = int(raw)
-    except ValueError:
-        return UNDO_TIMEOUT_MS
-    return value if value > 0 else UNDO_TIMEOUT_MS
-
-
-@dataclass
-class DeletedNote:
-    """One deleted note plus everything undo needs to put it back.
-
-    ``session_member`` is captured at delete time: an undone untouched note
-    must still follow ticket 03's "discard when the session created it" rule.
-    """
-
-    note: Note
-    index: int
-    session_member: bool
-
-
-class UndoController:
-    """Exactly one pending delete, with a single timer.
-
-    ``start`` finalises any previous payload (spec §10: a second delete fixes
-    the first) and restarts the countdown. The payload is memory-only; nothing
-    here is persisted and a restart therefore cannot undo anything.
-    """
-
-    def __init__(
-        self,
-        *,
-        timeout_ms: int,
-        schedule: Callable[[int, Callable[[], bool]], object],
-        cancel: Callable[[object], None],
-        on_expire: Callable[[], None] | None = None,
-    ) -> None:
-        self._timeout_ms = timeout_ms
-        self._schedule = schedule
-        self._cancel = cancel
-        self._on_expire = on_expire
-        self._handle: object | None = None
-        self.pending: DeletedNote | None = None
-
-    def start(self, deleted: DeletedNote) -> None:
-        self.finalize()
-        self.pending = deleted
-        self._handle = self._schedule(self._timeout_ms, self._expire)
-
-    def take(self) -> DeletedNote | None:
-        """Hand the payload back once and cancel its timer."""
-        if self.pending is None:
-            return None
-        self._cancel_timer()
-        deleted, self.pending = self.pending, None
-        return deleted
-
-    def finalize(self) -> None:
-        """Drop the payload; after this it can no longer be undone."""
-        self._cancel_timer()
-        self.pending = None
-
-    def _cancel_timer(self) -> None:
-        if self._handle is None:
-            return
-        handle, self._handle = self._handle, None
-        self._cancel(handle)
-
-    def _expire(self) -> bool:
-        self._handle = None
-        self.pending = None
-        if self._on_expire is not None:
-            self._on_expire()
-        return False
-
-
-def _logical_workarea(monitor: Gdk.Monitor) -> Rect:
-    get_workarea = getattr(monitor, "get_workarea", None)
-    if get_workarea is not None:
-        area = get_workarea()
-        if area.width > 0 and area.height > 0:
-            return Rect(area.x, area.y, area.width, area.height)
-
-    geometry = monitor.get_geometry()
-    return Rect(
-        geometry.x,
-        geometry.y,
-        geometry.width,
-        max(0, geometry.height - _TOP_BAR_HEIGHT),
-    )
-
 
 class LurkNotesApp(Gtk.Application):
     def __init__(
@@ -221,6 +96,7 @@ class LurkNotesApp(Gtk.Application):
         )
         self.x11 = x11
         self.store = store or Store()
+        self._placement = Placement(self)
         self.notes: list[Note] = []
         # Untouched-note deletion requires knowing which notes this process
         # created. A loaded empty note has the same timestamps as a fresh one,
@@ -260,27 +136,13 @@ class LurkNotesApp(Gtk.Application):
             cancel=GLib.source_remove,
         )
         self._undo = UndoController(
-            timeout_ms=_undo_timeout_ms(),
+            timeout_ms=testhooks.undo_timeout_ms(),
             schedule=GLib.timeout_add,
             cancel=GLib.source_remove,
             on_expire=self._on_undo_expired,
         )
-        self._test_dump_path = os.environ.get("LURKNOTES_TEST_DUMP")
-        self._test_type = os.environ.get("LURKNOTES_TEST_TYPE")
-        self._test_typed = False
-        self._test_open_all = os.environ.get("LURKNOTES_TEST_OPEN_ALL") == "1"
-        self._pin_deck = os.environ.get("LURKNOTES_TEST_PIN_DECK") == "1"
-        # Prove that the bare command expands the fan by itself, with the
-        # pointer path disabled, on a desktop where concurrent agents move
-        # the shared pointer.
-        self._test_no_hover = os.environ.get("LURKNOTES_TEST_NO_HOVER") == "1"
+        self._hooks = TestHooks(self)
         self._last_command = ""
-        # Simulate a shell that refuses activation; the live smoke uses this
-        # to prove the "Click to type" path on a machine where present()
-        # normally succeeds (PLATFORM §4).
-        self._test_refuse_focus = (
-            os.environ.get("LURKNOTES_TEST_REFUSE_FOCUS") == "1"
-        )
         # Ticket 09: first-launch onboarding and the 150 ms focus decision.
         self._onboarding_pending = needs_onboarding()
         self._focus_guard: FocusGuard | None = None
@@ -334,13 +196,8 @@ class LurkNotesApp(Gtk.Application):
         quit_action.connect("activate", self._on_quit)
         self.add_action(quit_action)
         self.set_accels_for_action("app.quit", ["<Control>q"])
-        # Smoke-only control channel for a shared, busy X session. It is not
-        # registered unless LURKNOTES_TEST_CONTROL is set, so production has
-        # no extra action and no polling.
-        if os.environ.get("LURKNOTES_TEST_CONTROL"):
-            control = Gio.SimpleAction.new("control", GLib.VariantType.new("s"))
-            control.connect("activate", self._on_test_control)
-            self.add_action(control)
+        # Smoke-only control channel, env-gated in lurkn.testhooks.
+        self._hooks.install_control_action()
         self._load_notes()
 
     def do_command_line(self, command_line: Gio.ApplicationCommandLine) -> int:
@@ -425,41 +282,6 @@ class LurkNotesApp(Gtk.Application):
 
     def _on_quit(self, *_args) -> None:
         self.quit()
-
-    def _on_test_control(self, _action, parameter) -> None:
-        """Drive deck interactions when another test covers the screen.
-
-        Only registered with ``LURKNOTES_TEST_CONTROL``. It calls the same
-        handlers the X11 pointer would (motion controllers, button ``clicked``
-        signals), so the state machine and widgets are exercised even when a
-        concurrent agent's ABOVE window owns the pixels at the screen edge.
-        """
-        command = parameter.get_string() if parameter is not None else ""
-        if command == "strip":
-            self._on_deck_enter()
-        elif command == "leave":
-            self._on_deck_leave()
-        elif command.startswith("tab:"):
-            self._on_tab_enter(command[4:])
-        elif command.startswith("untab:"):
-            self._on_tab_leave(command[6:])
-        elif command == "header":
-            if self.panel is not None:
-                self.panel.activate_collapse()
-        elif command.startswith("tabclick:"):
-            if self.panel is not None:
-                self.panel.activate_tab(command[9:])
-        elif command.startswith("scroll:"):
-            if self.panel is not None:
-                self.panel.scroll_by(float(command[7:]))
-        elif command.startswith("open:"):
-            self.open_note(command[5:])
-        elif command == "close":
-            self.close_note()
-        elif command == "undo":
-            self.undo_delete()
-        else:
-            print(f"lurknotes: unknown test control {command!r}", file=sys.stderr)
 
     def _on_close_request(self, _window: Gtk.Window) -> bool:
         """A WM close is a normal shutdown, not one lost window (spec §5.2).
@@ -547,13 +369,13 @@ class LurkNotesApp(Gtk.Application):
                 self.panel.show_save_failed(True)
             print(strings.ERROR.format(message=str(exc)), file=sys.stderr)
             self._retrier.failed()
-            self._schedule_test_dump()
+            self._hooks.schedule_dump()
             return False
         self.unsaved = False
         if self.panel is not None:
             self.panel.show_save_failed(False)
         self._retrier.succeeded()
-        self._schedule_test_dump()
+        self._hooks.schedule_dump()
         return True
 
     def _retry_save(self) -> None:
@@ -561,65 +383,12 @@ class LurkNotesApp(Gtk.Application):
         # attempt clears it, a failing one schedules the next backoff.
         self._save_notes()
 
-    def _show_storage_status(self) -> None:
-        if self.panel is None:
-            return
-        result = self._load_result
-        if result is None:
-            if self._load_error is not None:
-                self.panel.show_status(
-                    strings.STORAGE_READ_FAILED.format(detail=self._load_error)
-                )
-            return
-
-        if result.status == LOAD_RECOVERED:
-            if result.save_error is not None:
-                self.panel.show_status(strings.STORAGE_RECOVERY_NOT_SAVED)
-                self._retrier.failed()
-                return
-            corrupt = (
-                result.corrupt_path.name
-                if result.corrupt_path is not None
-                else "notes.corrupt-<timestamp>.json"
-            )
-            self.panel.show_status(
-                strings.STORAGE_RECOVERED.format(
-                    count=len(result.notes), corrupt=corrupt
-                ),
-                kind="warning",
-                dismissible=True,
-            )
-        elif result.status == LOAD_CORRUPT:
-            self.panel.show_status(
-                strings.STORAGE_CORRUPT,
-                action_label=strings.STATUS_CONTINUE,
-                on_action=self._confirm_overwrite,
-            )
-        elif result.status == LOAD_UNSUPPORTED:
-            self.panel.show_status(
-                strings.STORAGE_UNSUPPORTED,
-                kind="warning",
-                dismissible=True,
-            )
-
-    def _confirm_overwrite(self) -> None:
-        if not self.store.confirm_overwrite():
-            return
-        self.overwrite_blocked = False
-        print(
-            strings.ERROR.format(
-                message="user confirmed replacing the corrupt notes file"
-            ),
-            file=sys.stderr,
-        )
-        self._schedule_test_dump()
-
     # -- deck ----------------------------------------------------------
 
     def _build_deck(self) -> None:
         display = Gdk.Display.get_default()
         monitor = display.get_monitors().get_item(0)
-        self._workarea = _logical_workarea(monitor)
+        self._workarea = logical_workarea(monitor)
 
         self.strip = StripWindow(self, self._workarea.height)
         self.panel = PanelWindow(
@@ -634,7 +403,7 @@ class LurkNotesApp(Gtk.Application):
             on_collapse=self.collapse_deck,
             on_hover_tab=self._on_tab_enter,
             on_leave_tab=self._on_tab_leave,
-            on_scrolled=lambda: self._schedule_test_dump(delay=30),
+            on_scrolled=lambda: self._hooks.schedule_dump(delay=30),
             on_delete=self.delete_current,
             on_undo=self.undo_delete,
             on_reorder=self.reorder_note,
@@ -652,7 +421,7 @@ class LurkNotesApp(Gtk.Application):
         self.panel.connect("notify::is-active", self._on_panel_active_changed)
         self.panel.show_fan(self.notes)
         self.panel.set_read_only(self.read_only)
-        self._show_storage_status()
+        storage_ui.show_storage_status(self)
 
         # Hover is tracked at the window edges, not per tab: leaving the strip
         # for the panel is one continuous "inside the deck" stay, and only
@@ -684,9 +453,7 @@ class LurkNotesApp(Gtk.Application):
         # machine, never at startup.
         self.strip.set_visible(True)
         self.panel.set_visible(False)
-        self._schedule_test_dump(delay=100)
-        if self._test_open_all:
-            GLib.timeout_add(250, self._open_all_notes_for_test)
+        self._hooks.schedule_dump(delay=100)
 
     def _motion_controller(self, on_enter, on_leave) -> Gtk.EventControllerMotion:
         motion = Gtk.EventControllerMotion()
@@ -695,12 +462,12 @@ class LurkNotesApp(Gtk.Application):
         return motion
 
     def _on_deck_enter(self) -> None:
-        if getattr(self, "_test_no_hover", False):
+        if self._hooks.no_hover:
             return
         self.deck.hover_enter()
 
     def _on_deck_leave(self) -> None:
-        if self._pin_deck:
+        if self._hooks.pin_deck:
             return
         # Ticket 05: while an undo is available, unmapping the fan would take
         # the toast and its Undo button with it. Hide the peek, stay mapped.
@@ -708,6 +475,9 @@ class LurkNotesApp(Gtk.Application):
 
     def _on_tab_enter(self, note_id: str) -> None:
         self.deck.hover_tab(note_id)
+        # Test observability for the 150 ms crossing gap: the dump must show
+        # that the previous peek stayed visible until the new one replaced it.
+        self._hooks.schedule_dump(delay=20)
 
     def _on_tab_leave(self, note_id: str) -> None:
         self.deck.hover_tab_leave(note_id)
@@ -722,12 +492,12 @@ class LurkNotesApp(Gtk.Application):
         self.deck.drag_begin()
         if self.panel is not None:
             self.panel.hide_peek()
-        self._schedule_test_dump(delay=20)
+        self._hooks.schedule_dump(delay=20)
 
     def _on_drag_update(self) -> None:
         # The target row changes while the pointer moves; the smoke test reads
         # it from the dump before releasing.
-        self._schedule_test_dump(delay=20)
+        self._hooks.schedule_dump(delay=20)
 
     def _on_drag_end(self) -> None:
         self.deck.drag_end()
@@ -736,11 +506,7 @@ class LurkNotesApp(Gtk.Application):
             # and the pointer already left long ago, so start the normal
             # collapse countdown here (an undo toast still pins the panel).
             self.deck.hover_leave(allow_collapse=self._undo.pending is None)
-        self._schedule_test_dump(delay=20)
-
-    def _open_all_notes_for_test(self) -> bool:
-        self.show_all_notes()
-        return False
+        self._hooks.schedule_dump(delay=20)
 
     def show_all_notes(self) -> None:
         """Show (or raise) the All Notes window; ticket 09's ``all`` uses this."""
@@ -752,14 +518,14 @@ class LurkNotesApp(Gtk.Application):
                 notes_provider=self.notes_for_view,
                 on_open=self.open_note,
                 events=self.deck_changed_event,
-                on_refresh=lambda: self._schedule_test_dump(delay=80),
+                on_refresh=lambda: self._hooks.schedule_dump(delay=80),
             )
             self.all_notes.connect("map", self._on_all_notes_map)
         self.all_notes.refresh()
         self.all_notes.present()
         self.all_notes.focus_search()
         self._watch_all_notes_focus()
-        self._schedule_test_dump(delay=100)
+        self._hooks.schedule_dump(delay=100)
 
     def _on_all_notes_map(self, *_args) -> None:
         # GNOME places a plain X11 window at the workarea corner. Spec §6 says
@@ -777,24 +543,12 @@ class LurkNotesApp(Gtk.Application):
             or self._workarea is None
         ):
             return False
-        surface = self.all_notes.get_surface()
-        if surface is None:
-            return False
-        xid = GdkX11.X11Surface.get_xid(surface)
-        width = self.all_notes.get_width()
-        height = self.all_notes.get_height()
-        if width <= 0 or height <= 0:
-            return False
-        extents = self.x11.frame_extents(xid)
-        x, y = centered_position(
-            self._workarea,
-            surface.get_scale(),
-            width,
-            height,
-            extents,
+        extents_known = center_in_workarea(
+            self.all_notes, self.x11, self._workarea
         )
-        self.x11.move(xid, x, y)
-        if extents == (0, 0, 0, 0) and self._all_notes_place_tries < 5:
+        if extents_known is None:
+            return False
+        if not extents_known and self._all_notes_place_tries < 5:
             # GTK may set _GTK_FRAME_EXTENTS a frame after the map; correct
             # the centre when it does. The first pass already put the window
             # at the workarea centre, so the smoke never sees the WM default.
@@ -842,7 +596,7 @@ class LurkNotesApp(Gtk.Application):
         undo, reorder) so All Notes stays in sync without a reopen.
         """
         self.deck_changed_event.notify()
-        self._schedule_test_dump(delay=100)
+        self._hooks.schedule_dump(delay=100)
 
     def reorder_note(self, note_id: str, target_index: int) -> bool:
         """Move *note_id* to *target_index* and persist immediately (spec §4.4).
@@ -884,16 +638,16 @@ class LurkNotesApp(Gtk.Application):
         # Mutter applies its own state and WM_HINTS when the window maps, so
         # the hints set before mapping are not enough. Re-assert them after
         # the window is viewable, then settle the exact X11 rect.
-        self._settle_strip()
-        GLib.timeout_add(50, self._settle_strip)
+        self._placement.settle_strip()
+        GLib.timeout_add(50, self._placement.settle_strip)
 
     def _on_panel_map(self, *_args) -> None:
         # Every hover remap drops _NET_WM_STATE, _NET_WM_DESKTOP, WM_HINTS and
         # the position (PLATFORM §2). Re-applying here — not only at startup —
         # is what keeps the fan above, sticky and input-less after a collapse.
-        self._settle_panel()
-        GLib.timeout_add(50, self._settle_panel)
-        self._schedule_test_dump(delay=60)
+        self._placement.settle_panel()
+        GLib.timeout_add(50, self._placement.settle_panel)
+        self._hooks.schedule_dump(delay=60)
 
     def _show_panel(self) -> None:
         """Map the fan without focus: never ``present()`` for hover (§7.4)."""
@@ -901,7 +655,7 @@ class LurkNotesApp(Gtk.Application):
             return
         self.panel.set_visible(True)
         self._maybe_show_onboarding()
-        self._schedule_test_dump(delay=30)
+        self._hooks.schedule_dump(delay=30)
 
     def _hide_panel(self) -> None:
         if self.panel is None:
@@ -910,7 +664,7 @@ class LurkNotesApp(Gtk.Application):
             self._focus_guard.clear()
         self._set_focus_hint(False)
         self.panel.set_visible(False)
-        self._schedule_test_dump(delay=30)
+        self._hooks.schedule_dump(delay=30)
 
     def _show_peek(self, note_id: str) -> None:
         if self.panel is None or self.state != STATE_FAN:
@@ -919,64 +673,12 @@ class LurkNotesApp(Gtk.Application):
         if note is None:
             return
         self.panel.show_peek(note_id, note.preview())
-        self._schedule_test_dump(delay=30)
+        self._hooks.schedule_dump(delay=30)
 
     def _hide_peek(self) -> None:
         if self.panel is not None:
             self.panel.hide_peek()
-        self._schedule_test_dump(delay=20)
-
-    def _settle_strip(self) -> bool:
-        if self.strip is None or self.x11 is None:
-            return False
-        xid = self._xid(self.strip)
-        if xid is None:
-            return False
-        self.x11.set_deck_hints(xid)
-        self.x11.set_input(xid, False)
-        self.x11.set_no_focus(xid)
-        self._place_strip()
-        return False
-
-    def _settle_panel(self) -> bool:
-        if self.panel is None or self.x11 is None:
-            return False
-        xid = self._xid(self.panel)
-        if xid is None:
-            return False
-        self.x11.set_deck_hints(xid)
-        self.x11.set_input(xid, self.state == STATE_OPEN)
-        if self.state != STATE_OPEN:
-            self.x11.set_no_focus(xid)
-        self._place_panel()
-        return False
-
-    def _place_strip(self) -> bool:
-        if self.strip is None or self.x11 is None or self._workarea is None:
-            return False
-        surface = self.strip.get_surface()
-        if surface is None:
-            return False
-        xid = GdkX11.X11Surface.get_xid(surface)
-        rect = strip_rect(self._workarea, surface.get_scale(), STRIP_WIDTH)
-        self.x11.move_resize(xid, rect)
-        return False
-
-    def _place_panel(self) -> bool:
-        if self.panel is None or self.x11 is None or self._workarea is None:
-            return False
-        surface = self.panel.get_surface()
-        if surface is None:
-            return False
-        xid = GdkX11.X11Surface.get_xid(surface)
-        rect = panel_rect(
-            self._workarea,
-            surface.get_scale(),
-            PANEL_WIDTH,
-            STRIP_WIDTH,
-        )
-        self.x11.move_resize(xid, rect)
-        return False
+        self._hooks.schedule_dump(delay=20)
 
     # -- navigation ----------------------------------------------------
 
@@ -994,7 +696,7 @@ class LurkNotesApp(Gtk.Application):
             # expand_now's callback maps it; an already-open note keeps it.
             self.panel.set_visible(True)
             self._maybe_show_onboarding()
-        self._schedule_test_dump(delay=30)
+        self._hooks.schedule_dump(delay=30)
 
     def command_new(self) -> bool:
         """``lurknotes new``: create and open a note, or reuse the untouched one.
@@ -1004,7 +706,7 @@ class LurkNotesApp(Gtk.Application):
         """
         if self.read_only or self.overwrite_blocked:
             self.expand_deck()
-            self._show_storage_status()
+            storage_ui.show_storage_status(self)
             return False
 
         current = self.current_id if self.state == STATE_OPEN else None
@@ -1028,15 +730,15 @@ class LurkNotesApp(Gtk.Application):
             # Read-only and unconfirmed-corrupt files cannot accept new notes:
             # anything created now could never be saved. Surface the existing
             # ticket 08 banner instead of silently doing nothing.
-            self._show_storage_status()
+            storage_ui.show_storage_status(self)
             return
         self._leave_current()
         note = Note.create()
         add_at_top(self.notes, note)
         self.session_ids.add(note.id)
-        # Ordering is the array, so a crash before typing must not lose the
-        # new note's place at the top.
-        self._save_notes()
+        # Creation is in memory only (spec §5.2): the note is written by the
+        # 400 ms debounce, a switch, close or shutdown. A crash right after
+        # `lurknotes new` must not leave a permanent empty note behind.
         self.open_note(note.id)
         self.deck_changed()
 
@@ -1060,9 +762,9 @@ class LurkNotesApp(Gtk.Application):
             self._maybe_show_onboarding()
         self.panel.show_note(note, self.notes)
         self._activate_panel()
-        self._schedule_test_dump()
-        if self._test_type:
-            GLib.timeout_add(600, self._maybe_test_type)
+        self._hooks.schedule_dump()
+        if self._hooks.type_text:
+            GLib.timeout_add(600, self._hooks.maybe_type)
 
     def close_note(self) -> None:
         if self.state != STATE_OPEN:
@@ -1079,7 +781,7 @@ class LurkNotesApp(Gtk.Application):
             self.x11.set_no_focus(xid)
         if self.panel is not None:
             self.panel.show_fan(self.notes)
-        self._schedule_test_dump()
+        self._hooks.schedule_dump()
 
     def collapse_deck(self) -> None:
         """Collapse fan -> strip from the header ``×`` (no focus needed).
@@ -1094,7 +796,7 @@ class LurkNotesApp(Gtk.Application):
             if self._focus_guard is not None:
                 self._focus_guard.clear()
             self._set_focus_hint(False)
-            self._schedule_test_dump(delay=30)
+            self._hooks.schedule_dump(delay=30)
 
     def _pointer_over_deck(self) -> bool:
         """Is the pointer still inside the strip+panel rectangle?"""
@@ -1130,7 +832,7 @@ class LurkNotesApp(Gtk.Application):
         guard.watch()
 
     def _panel_focus_for_guard(self) -> bool:
-        if getattr(self, "_test_refuse_focus", False):
+        if self._hooks.refuse_focus:
             return False
         return self._panel_has_focus()
 
@@ -1144,13 +846,13 @@ class LurkNotesApp(Gtk.Application):
         ):
             return
         self._set_focus_hint(True)
-        self._schedule_test_dump(delay=30)
+        self._hooks.schedule_dump(delay=30)
 
     def _on_panel_active_changed(self, *_args) -> None:
         """Clear the hint when focus arrives a little later than 150 ms."""
         if self.panel is None or self.x11 is None:
             return
-        if getattr(self, "_test_refuse_focus", False):
+        if self._hooks.refuse_focus:
             return
         if not self.panel.is_active():
             return
@@ -1159,7 +861,7 @@ class LurkNotesApp(Gtk.Application):
         if self._focus_guard is not None:
             self._focus_guard.focus_arrived()
         self._set_focus_hint(False)
-        self._schedule_test_dump(delay=30)
+        self._hooks.schedule_dump(delay=30)
 
     def _grant_panel_focus(self) -> None:
         """First click on an unfocused editor: take input and focus the caret."""
@@ -1174,7 +876,7 @@ class LurkNotesApp(Gtk.Application):
             self.x11.allow_focus(xid)
         self.panel.present()
         self.panel.focus_editor()
-        self._schedule_test_dump(delay=30)
+        self._hooks.schedule_dump(delay=30)
 
     def _set_focus_hint(self, visible: bool) -> None:
         show = getattr(self.panel, "show_focus_hint", None)
@@ -1196,7 +898,7 @@ class LurkNotesApp(Gtk.Application):
     def _all_notes_has_focus(self) -> bool:
         if self.all_notes is None or self.x11 is None:
             return False
-        if getattr(self, "_test_refuse_focus", False):
+        if self._hooks.refuse_focus:
             return False
         xid = self._xid(self.all_notes)
         return xid is not None and self.x11.has_focus(xid)
@@ -1208,7 +910,7 @@ class LurkNotesApp(Gtk.Application):
             return
         self.all_notes.present()
         self.all_notes.focus_search()
-        self._schedule_test_dump(delay=30)
+        self._hooks.schedule_dump(delay=30)
 
     def _maybe_show_onboarding(self) -> None:
         """Show the one-time hotkey hint the first time the deck is visible."""
@@ -1223,7 +925,7 @@ class LurkNotesApp(Gtk.Application):
         show()
         # Best effort: a read-only data dir still gets the hint this run.
         mark_onboarded()
-        self._schedule_test_dump(delay=30)
+        self._hooks.schedule_dump(delay=30)
 
     def cycle_note(self, step: int) -> None:
         """Open the note *step* places away, wrapping (spec §7.3)."""
@@ -1281,7 +983,7 @@ class LurkNotesApp(Gtk.Application):
                 self.x11.set_no_focus(xid)
             if self.panel is not None:
                 self.panel.show_fan(self.notes)
-            self._schedule_test_dump()
+            self._hooks.schedule_dump()
         return True
 
     def undo_delete(self) -> bool:
@@ -1315,7 +1017,7 @@ class LurkNotesApp(Gtk.Application):
         # gone, the next leave event will never come, so collapse now.
         if self.state == STATE_FAN and not self._pointer_over_deck():
             self.deck.collapse()
-        self._schedule_test_dump(delay=30)
+        self._hooks.schedule_dump(delay=30)
 
     def _leave_current(self) -> None:
         """Flush and, when appropriate, drop the note being left."""
@@ -1399,86 +1101,3 @@ class LurkNotesApp(Gtk.Application):
         # deck immediately after this snapshot.
         if save and (changed or self.unsaved):
             self._save_notes()
-
-    # -- test hooks ----------------------------------------------------
-
-    def _schedule_test_dump(self, delay: int = 150) -> None:
-        if self._test_dump_path:
-            GLib.timeout_add(delay, self._write_test_dump)
-
-    def _write_test_dump(self) -> bool:
-        if not self._test_dump_path or self.panel is None:
-            return False
-
-        state = self.state
-        is_open = state == STATE_OPEN
-        is_fan = state == STATE_FAN
-        peek = self.panel.peek_snapshot()
-        peek["center"] = self.panel.peek_center() if is_fan else None
-        snapshot = {
-            "state": state,
-            "current_id": self.current_id,
-            "ids": [note.id for note in self.notes],
-            "titles": [note.title() for note in self.notes],
-            "tab_centers": (
-                self.panel.tab_centers() if is_fan else []
-            ),
-            "tab_heights": self.panel.tab_heights() if is_fan else [],
-            "tab_ids": self.panel.tab_ids(),
-            "tab_titles": self.panel.tab_titles(),
-            "tab_cursors": self.panel.tab_cursors(),
-            "drag": self.panel.drag_snapshot(),
-            "new_button_center": (
-                self.panel.new_button_center() if is_fan else None
-            ),
-            "collapse_button_center": (
-                self.panel.collapse_button_center() if is_fan else None
-            ),
-            "scroll_value": self.panel.scroll_value(),
-            "peek": peek,
-            "rail_centers": (
-                self.panel.rail_centers() if is_open else []
-            ),
-            "rail_titles": self.panel.rail_titles() if is_open else [],
-            "active_index": (
-                self.panel.active_index() if is_open else -1
-            ),
-            "text": self.panel.note.text() if is_open else None,
-            "cursor_offset": (
-                self.panel.note.cursor_offset() if is_open else None
-            ),
-            "cursor_at_end": self.panel.note.cursor_at_end() if is_open else None,
-            "rail_width": self.panel.note.rail_width() if is_open else None,
-            "typed": self._test_typed,
-            "read_only": self.read_only,
-            "overwrite_blocked": self.overwrite_blocked,
-            "unsaved": self.unsaved,
-            "status": self.panel.status_snapshot(),
-            "all_notes": (
-                self.all_notes.snapshot()
-                if self.all_notes is not None
-                else None
-            ),
-            "toast": self.panel.toast_snapshot(),
-            "undo_pending": self._undo.pending is not None,
-            "panel_focused": self._panel_has_focus(),
-            "focus_hint": self.panel.focus_hint_snapshot(),
-            "onboarding": self.panel.onboarding_snapshot(),
-            "last_command": getattr(self, "_last_command", ""),
-        }
-        target = Path(self._test_dump_path)
-        temporary = target.with_name(target.name + ".tmp")
-        try:
-            temporary.write_text(json.dumps(snapshot), encoding="utf-8")
-            os.replace(temporary, target)
-        except OSError:
-            pass
-        return False
-
-    def _maybe_test_type(self) -> bool:
-        if not self._test_type or self._test_typed or self.state != STATE_OPEN:
-            return False
-        self._test_typed = True
-        self.panel.note.insert_at_cursor(self._test_type)
-        self._schedule_test_dump(delay=30)
-        return False

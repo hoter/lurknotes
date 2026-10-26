@@ -31,7 +31,11 @@ from typing import Callable
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+import harness as h  # noqa: E402
+
 from lurkn.strings import FAN_TITLE, NOTE_TITLE, STRIP_TITLE  # noqa: E402
+
+SmokeFailure = h.SmokeFailure
 
 PANEL_LOGICAL_WIDTH = 380
 STRIP_LOGICAL_WIDTH = 10
@@ -51,42 +55,12 @@ SAVE_TIMEOUT = 3.0
 COVER_TIMEOUT = 20.0
 
 
-class SmokeFailure(Exception):
-    pass
-
-
 # -- external commands ---------------------------------------------------
 
 
-def _run(*command: str) -> str:
-    result = subprocess.run(command, text=True, capture_output=True, check=False)
-    if result.returncode != 0:
-        raise SmokeFailure(
-            f"{' '.join(command)} failed ({result.returncode}): {result.stderr.strip()}"
-        )
-    return result.stdout
-
-
-def _effective_scale() -> float:
-    override = os.environ.get("GDK_SCALE")
-    if override:
-        return float(override)
-    output = _run("xrdb", "-query")
-    match = re.search(r"Xft\.dpi:\s*([0-9.]+)", output)
-    if match is None:
-        return 1.0
-    return float(match.group(1)) / 96.0
-
-
-def _workarea() -> tuple[int, int, int, int]:
-    output = _run("xprop", "-root", "_NET_WORKAREA")
-    match = re.search(r"_NET_WORKAREA\(CARDINAL\)\s*=\s*(.+)", output)
-    if match is None:
-        raise SmokeFailure("root window has no _NET_WORKAREA; cannot check geometry")
-    values = [int(value) for value in re.findall(r"\d+", match.group(1))]
-    if len(values) < 4:
-        raise SmokeFailure(f"unexpected _NET_WORKAREA: {output.strip()}")
-    return values[0], values[1], values[2], values[3]
+_run = h.run
+_effective_scale = h.effective_scale
+_workarea = h.workarea
 
 
 def _windows_titled(title: str, pid: int | None = None) -> list[str]:
@@ -335,74 +309,26 @@ def _check_dark(window: str, *, rail: bool = False) -> None:
 
 
 def _app_id() -> str:
-    return f"dev.lurknotes.LurkNotes.noteSmoke.s{os.getpid()}"
+    return h.app_id("noteSmoke")
 
 
-def _mark_onboarded(data_home: Path) -> None:
-    """Returning user for every smoke except the onboarding one.
-
-    The first-launch banner is 64 px tall and would move the fan/editor
-    geometry and the dark-pixel samples this suite asserts. Ticket 09's own
-    smoke exercises the banner against a fresh data dir instead.
-    """
-    marker = Path(data_home) / "lurknotes" / "onboarded"
-    try:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("onboarded\n", encoding="utf-8")
-    except OSError:
-        # Storage tests deliberately make the data dir unwritable; onboarding
-        # is outside what they assert.
-        pass
+_mark_onboarded = h.mark_onboarded
 
 
 def _start_app(data_home: Path, dump: Path, type_text: str | None) -> subprocess.Popen[str]:
     _mark_onboarded(data_home)
-    env = os.environ.copy()
-    env.update(
-        {
-            "XDG_DATA_HOME": str(data_home),
-            "XDG_CONFIG_HOME": str(data_home / "config"),
-            "GDK_BACKEND": "x11",
-            "NO_AT_BRIDGE": "1",
-            "LURKNOTES_APP_ID": _app_id(),
-            "LURKNOTES_TEST_DUMP": str(dump),
-            "LURKNOTES_TEST_CONTROL": "1",
-            "LURKNOTES_TEST_PIN_DECK": "1",
-        }
-    )
+    extra = {
+        "LURKNOTES_TEST_CONTROL": "1",
+        "LURKNOTES_TEST_PIN_DECK": "1",
+    }
     if type_text is not None:
-        env["LURKNOTES_TEST_TYPE"] = type_text
-    process = subprocess.Popen(
-        [str(ROOT / "lurknotes")],
-        cwd=str(ROOT),
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    process.lurk_app_id = env["LURKNOTES_APP_ID"]  # type: ignore[attr-defined]
-    return process
+        extra["LURKNOTES_TEST_TYPE"] = type_text
+    env = h.make_env(data_home, _app_id(), dump=dump, extra=extra)
+    return h.launch([], env)
 
 
-def _ensure_running(process: subprocess.Popen[str]) -> None:
-    if process.poll() is None:
-        return
-    stdout, stderr = process.communicate(timeout=5)
-    raise SmokeFailure(
-        f"app exited with {process.returncode} unexpectedly\n"
-        f"stdout: {stdout[-2000:]}\nstderr: {stderr[-2000:]}"
-    )
-
-
-def _stop(process: subprocess.Popen[str]) -> None:
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
+_ensure_running = h.ensure_running
+_stop = h.stop
 
 
 def _wait_for_exit(process: subprocess.Popen[str], timeout: float = 5.0) -> int:
@@ -537,20 +463,7 @@ def _wait_dump(
     predicate: Callable[[dict], bool],
     timeout: float = DUMP_TIMEOUT,
 ) -> dict:
-    deadline = time.monotonic() + timeout
-    last: dict | None = None
-    while time.monotonic() < deadline:
-        _ensure_running(process)
-        try:
-            snapshot = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            pass
-        else:
-            last = snapshot
-            if predicate(snapshot):
-                return snapshot
-        time.sleep(0.05)
-    raise SmokeFailure(f"deck snapshot never matched; last dump: {last}")
+    return h.wait_dump(path, process, predicate, timeout=timeout)
 
 
 # -- pointer / XTest -----------------------------------------------------
@@ -1166,34 +1079,7 @@ def _wait_for_text_on_disk(path: Path, expected: str) -> dict:
     raise SmokeFailure(f"text was not saved within {SAVE_TIMEOUT:.0f}s; last: {last}")
 
 
-def _assert_app_id_free(app_id: str) -> None:
-    """A same-id instance would receive our launch and exit 0 (PLATFORM §10).
-
-    Only *our* id matters: another worktree's LurkNotes has a different id and
-    may legitimately be on screen while this smoke runs.
-    """
-    result = subprocess.run(
-        [
-            "gdbus",
-            "call",
-            "--session",
-            "--dest",
-            "org.freedesktop.DBus",
-            "--object-path",
-            "/org/freedesktop/DBus",
-            "--method",
-            "org.freedesktop.DBus.NameHasOwner",
-            app_id,
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        # No gdbus or no session bus; the spawn below would fail visibly.
-        return
-    if "true" in result.stdout.lower():
-        raise SmokeFailure(f"another LurkNotes instance owns {app_id}; retry")
+_assert_app_id_free = h.assert_app_id_free
 
 
 def _wait_for_no_windows(
@@ -1213,6 +1099,55 @@ def _wait_for_no_windows(
             return
         time.sleep(0.05)
     raise SmokeFailure(f"windows survived shutdown: {titles}")
+
+
+def scenario_editor_shortcuts(
+    data_home: Path, dump: Path, xtest: XTest, app: subprocess.Popen[str]
+) -> subprocess.Popen[str]:
+    """Real keys through the capture controller on the GtkTextView."""
+    app = _start_app(data_home, dump, None)
+    _wait_for_window(STRIP_TITLE, app)
+    fan = _show_fan(xtest, app)
+    _wait_dump(
+        dump,
+        app,
+        lambda snapshot: snapshot.get("state") == "fan"
+        and snapshot.get("new_button_center") is not None,
+    )
+    _click_new_note(xtest, app, fan, dump)
+    note = _wait_for_window(NOTE_TITLE, app)
+    _click_editor(xtest, note)
+    xtest.focus(note)
+    xtest.chord(ord("b"))
+    xtest.type_text("bold")
+    _wait_dump(dump, app, lambda snapshot: snapshot.get("text") == "**bold**")
+    print("smoke-note: Ctrl+B without a selection inserted ** and put the caret inside")
+
+    _close_note_with_escape(xtest, app, note)
+    _wait_dump(dump, app, lambda snapshot: snapshot.get("state") == "fan")
+    fan = _wait_for_window(FAN_TITLE, app)
+    _click_new_note(xtest, app, fan, dump)
+    note = _wait_for_window(NOTE_TITLE, app)
+    _wait_dump(
+        dump,
+        app,
+        lambda value: value.get("state") == "open" and value.get("text") == "",
+    )
+    _click_editor(xtest, note)
+    xtest.focus(note)
+    xtest.type_text("- one")
+    xtest.type_text("\n")
+    xtest.type_text("two")
+    _wait_dump(dump, app, lambda value: value.get("text") == "- one\n- two")
+    print("smoke-note: Enter continued the bullet list")
+
+    xtest._tap(0xFF50)  # Home
+    xtest._tap(0xFF53)  # Right, onto the item text
+    xtest._tap(0xFF53)
+    xtest._tap(0xFF08)  # Backspace immediately after "- "
+    _wait_dump(dump, app, lambda value: value.get("text") == "- one\ntwo")
+    print("smoke-note: Backspace removed the whole list marker")
+    return app
 
 
 def main() -> int:
@@ -1413,7 +1348,13 @@ def main() -> int:
                 raise SmokeFailure(
                     f"duplicate Untitled titles broke the list: {new_top.get('titles')}"
                 )
-            _wait_for_ids_on_disk(notes_path, [top_id, *base_ids])
+            # Creation is in memory only (spec §5.2): a crash before typing
+            # must not leave a permanent empty note. Closing/typing saves it.
+            unchanged = json.loads(notes_path.read_text(encoding="utf-8"))
+            if [note["id"] for note in unchanged["notes"]] != base_ids:
+                raise SmokeFailure(
+                    "+ wrote the untouched note to notes.json before any text"
+                )
             print("smoke-note: + created an empty note at the top and opened it")
 
             # Closing that untouched note deletes it and saves immediately.
@@ -1445,9 +1386,12 @@ def main() -> int:
                 and snapshot.get("ids", [])[1:] == base_ids
                 and len(snapshot.get("rail_centers") or []) == 4,
             )
-            _wait_for_ids_on_disk(
-                notes_path, [rail_open["current_id"], *base_ids]
-            )
+            # Still not written: the switch below is what drops and saves it.
+            unchanged = json.loads(notes_path.read_text(encoding="utf-8"))
+            if [note["id"] for note in unchanged["notes"]] != base_ids:
+                raise SmokeFailure(
+                    "the untouched new note reached notes.json before the switch"
+                )
             _click_rail_note(xtest, app, restart_note, restart_dump, first_id)
             switched = _wait_dump(
                 restart_dump,
@@ -1691,7 +1635,13 @@ def main() -> int:
                 and snapshot.get("active_index") == 0,
             )
             untouched_id = opened["current_id"]
-            _wait_for_ids_on_disk(empty_notes, [untouched_id, *typed_ids])
+            # Still memory-only; quitting (next) must drop it without ever
+            # writing it, so a crash before then cannot leave it behind.
+            unchanged = json.loads(empty_notes.read_text(encoding="utf-8"))
+            if [note["id"] for note in unchanged["notes"]] != typed_ids:
+                raise SmokeFailure(
+                    "the untouched note reached notes.json before the quit"
+                )
             xtest.close_window(_wait_for_window(NOTE_TITLE, app))
             _wait_for_exit(app)
             _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE), app)
@@ -1759,6 +1709,18 @@ def main() -> int:
                     f"deck after quit is {after_quit.get('titles')}"
                 )
             print("smoke-note: the untouched note did not resurrect after a quit")
+
+            _stop(app)
+            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE), app)
+            app = scenario_editor_shortcuts(
+                data_home / "editor",
+                data_home / "editor-dump.json",
+                xtest,
+                app,
+            )
+            _stop(app)
+            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE), app)
+            print("smoke-note: editor shortcuts wrote plain Markdown text")
 
             print("smoke-note: OK")
             return 0

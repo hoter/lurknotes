@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
+import harness as h  # noqa: E402
 import smoke_note as base  # noqa: E402
 from lurkn.strings import ALL_NOTES_TITLE  # noqa: E402
 
@@ -46,35 +47,19 @@ def start_app(
     global RUN
     RUN += 1
     base._mark_onboarded(data_home)
-    env = os.environ.copy()
-    env.update(
-        {
-            "XDG_DATA_HOME": str(data_home),
-            "XDG_CONFIG_HOME": str(data_home / "config"),
-            "GDK_BACKEND": "x11",
-            "NO_AT_BRIDGE": "1",
-            "LURKNOTES_APP_ID": (
-                f"dev.lurknotes.LurkNotes.hoverSmoke.s{os.getpid()}.r{RUN}"
-            ),
-            "LURKNOTES_TEST_DUMP": str(dump),
-            "LURKNOTES_TEST_CONTROL": "1",
-        }
-    )
+    extra = {"LURKNOTES_TEST_CONTROL": "1"}
     if undo_ms is not None:
-        env["LURKNOTES_TEST_UNDO_MS"] = str(undo_ms)
+        extra["LURKNOTES_TEST_UNDO_MS"] = str(undo_ms)
+    env = h.make_env(
+        data_home,
+        h.app_id(f"hoverSmoke.r{RUN}"),
+        dump=dump,
+        extra=extra,
+    )
     # Ticket 09: a bare launch expands the fan by design. This suite starts
     # from the post-login rest state to prove the 120 ms hover path, so it
     # uses the quiet autostart invocation.
-    process = subprocess.Popen(
-        [str(ROOT / "lurknotes"), "--autostart"],
-        cwd=str(ROOT),
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    process.lurk_app_id = env["LURKNOTES_APP_ID"]  # type: ignore[attr-defined]
-    return process
+    return h.launch(["--autostart"], env)
 
 
 def control(app: subprocess.Popen[str], command: str) -> bool:
@@ -510,67 +495,6 @@ def ensure_fan_open(app: subprocess.Popen[str]) -> None:
     wait_fan_viewable(app, timeout=3.0)
 
 
-def hover_tab_until(
-    xtest: base.XTest,
-    dump: Path,
-    app: subprocess.Popen[str],
-    fan: str,
-    centers: list[list[float]],
-    index: int,
-    note_id: str,
-    timeout: float = 1.0,
-) -> dict:
-    """Hover one tab until its peek shows.
-
-    Other agents' smoke tests move the shared pointer with XTest too. If the
-    pointer lands somewhere else, retry instead of asserting on someone
-    else's hover. A wrong coordinate in this script still fails every attempt.
-    """
-    for attempt in range(1, 5):
-        base._ensure_running(app)
-        target_x, target_y = move_to_tab(xtest, fan, centers[index])
-        pointer = xtest._pointer()
-        if pointer is None or abs(pointer[0] - target_x) > 3 or (
-            abs(pointer[1] - target_y) > 3
-        ):
-            print(
-                f"smoke-hover: pointer moved by another test "
-                f"({pointer} != {(target_x, target_y)}); retrying hover"
-            )
-            time.sleep(0.2)
-            continue
-        try:
-            return snapshot(
-                dump,
-                app,
-                lambda snap: (snap.get("peek") or {}).get("id") == note_id,
-                timeout=timeout,
-            )
-        except SmokeFailure:
-            print(
-                f"smoke-hover: attempt {attempt} did not peek {note_id[:8]}; "
-                "moving away and retrying"
-            )
-            move_away(xtest)
-            time.sleep(0.15)
-    print(
-        f"smoke-hover: foreign window owns tab {note_id[:8]}; driving the "
-        "crossing through the test control channel"
-    )
-    ensure_fan_open(app)
-    if control(app, f"tab:{note_id}"):
-        try:
-            return snapshot(
-                dump,
-                app,
-                lambda snap: (snap.get("peek") or {}).get("id") == note_id,
-                timeout=3.0,
-            )
-        except SmokeFailure:
-            pass
-    raise SmokeFailure(f"hovering tab {note_id[:8]} never showed its peek")
-
-
 def move_away(xtest: base.XTest) -> None:
     xtest.move(*base._away_point())
 
@@ -749,6 +673,66 @@ def scenario_startup_and_hover(
     check_tooltip_dark(app, dump, fan, xtest)
 
 
+def observe_crossing(
+    dump: Path,
+    app: subprocess.Popen[str],
+    first_id: str,
+    second_id: str,
+    since_mtime: int,
+    timeout: float,
+) -> dict:
+    """Poll the dump while crossing tabs; the peek pane must never go empty.
+
+    Every snapshot must show exactly one peek with rendered body rows. The
+    previous note may stay during the 150 ms gap; the new note must eventually
+    replace it. An empty pane would mean the old peek was hidden before the
+    new timer fired, which is the flicker criterion 3 forbids.
+    """
+    deadline = time.monotonic() + timeout
+    last: dict | None = None
+    saw_old_after_move = False
+    while time.monotonic() < deadline:
+        base._ensure_running(app)
+        try:
+            snap = json.loads(dump.read_text(encoding="utf-8"))
+            mtime = dump.stat().st_mtime_ns
+        except (OSError, ValueError):
+            time.sleep(0.005)
+            continue
+        last = snap
+        peek = snap.get("peek") or {}
+        visible = peek.get("visible") or []
+        if len(visible) != 1 or visible[0] not in (first_id, second_id):
+            raise SmokeFailure(
+                "peek pane was blank or ambiguous while crossing tabs: "
+                f"{visible!r}"
+            )
+        if not peek.get("rendered"):
+            raise SmokeFailure(
+                "peek pane had no rendered rows while crossing tabs: "
+                f"{peek!r}"
+            )
+        if peek.get("rendered") != peek.get("lines"):
+            raise SmokeFailure(
+                "peek pane showed stale rows while crossing tabs: "
+                f"{peek!r}"
+            )
+        if peek.get("id") == first_id and mtime > since_mtime:
+            saw_old_after_move = True
+        if peek.get("id") == second_id:
+            print(
+                "smoke-hover: crossing saw the old peek stay"
+                if saw_old_after_move
+                else "smoke-hover: crossing sampled only the new peek"
+            )
+            return snap
+        time.sleep(0.005)
+    raise SmokeFailure(
+        "crossing to the next tab never showed its peek; last: "
+        f"{(last or {}).get('peek')!r}"
+    )
+
+
 def scenario_peek(
     app: subprocess.Popen[str], dump: Path, fan: str, xtest: base.XTest
 ) -> None:
@@ -836,15 +820,17 @@ def scenario_peek(
         "no focus theft"
     )
 
-    # Cross to the next tab. The old peek must disappear at once and only the
-    # new one may show, so a pointer sweep never leaves a stale peek behind.
+    # Cross to the next tab. The pane must never blank: the previous peek
+    # stays visible while the new tab's 150 ms timer runs, then the new note
+    # replaces it in one step.
     ready = snapshot(
         dump,
         app,
         lambda snap: (snap.get("peek") or {}).get("id") == first_id
         and len(snap.get("tab_centers") or []) == NOTE_COUNT,
     )
-    halfway: dict | None = None
+    before_crossing = dump.stat().st_mtime_ns
+    moved = False
     for attempt in range(1, 4):
         target_x, target_y = move_to_tab(xtest, fan, ready["tab_centers"][1])
         pointer = xtest._pointer()
@@ -857,51 +843,28 @@ def scenario_peek(
             )
             time.sleep(0.2)
             continue
-        try:
-            halfway = snapshot(
-                dump,
-                app,
-                lambda snap: first_id
-                not in (snap.get("peek") or {}).get("visible", []),
-                timeout=1.0,
-            )
-            break
-        except SmokeFailure:
-            print(f"smoke-hover: crossing attempt {attempt} missed; retrying")
-    if halfway is None:
+        moved = True
+        break
+    if not moved:
         print(
             "smoke-hover: crossing by pointer was blocked; using the control "
             "channel to move to the next tab"
         )
         ensure_fan_open(app)
         if not control(app, f"tab:{second_id}"):
-            raise SmokeFailure("crossing to the next tab did not hide the old peek")
-        halfway = snapshot(
-            dump,
-            app,
-            lambda snap: first_id
-            not in (snap.get("peek") or {}).get("visible", []),
-            timeout=2.0,
-        )
-    if (halfway.get("peek") or {}).get("visible") not in ([], [second_id]):
-        raise SmokeFailure(
-            "crossing tabs left the previous peek visible: "
-            f"{(halfway.get('peek') or {}).get('visible')!r}"
-        )
-    crossed = hover_tab_until(
-        xtest, dump, app, fan, ready["tab_centers"], 1, second_id
+            raise SmokeFailure("crossing to the next tab failed")
+    observe_crossing(
+        dump,
+        app,
+        first_id,
+        second_id,
+        before_crossing,
+        timeout=2.0,
     )
-    if crossed["peek"]["visible"] != [second_id]:
-        raise SmokeFailure(
-            f"after crossing tabs the visible peeks are "
-            f"{crossed['peek']['visible']!r}, expected only {second_id}"
-        )
-    if crossed["peek"].get("rendered") != crossed["peek"]["lines"]:
-        raise SmokeFailure(
-            "crossing tabs left stale preview rows: "
-            f"{crossed['peek'].get('rendered')!r}"
-        )
-    print("smoke-hover: crossing tabs hides the old peek and shows only the new one")
+    print(
+        "smoke-hover: crossing tabs kept the old peek until the new one "
+        "replaced it; the pane never went empty"
+    )
 
     # Leave the tab but stay in the fan: the peek hides, the fan stays.
     x, y = point_in(fan, 40, 20)  # the NOTES header, not a tab
@@ -918,7 +881,7 @@ def scenario_peek(
         raise SmokeFailure("leaving a tab collapsed the fan; it should stay open")
     if (cleared.get("peek") or {}).get("rendered"):
         raise SmokeFailure(
-            "leaving the tab left preview rows in the pane: "
+            "leaving the tab left peek rows in the pane: "
             f"{(cleared.get('peek') or {}).get('rendered')!r}"
         )
     print("smoke-hover: leaving the tab hides the peek and keeps the fan")

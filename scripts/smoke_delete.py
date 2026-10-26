@@ -28,6 +28,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import harness as h  # noqa: E402
+
 from lurkn.strings import FAN_TITLE, NOTE_TITLE, STRIP_TITLE, UNDO_TOAST  # noqa: E402
 from smoke_note import (  # noqa: E402
     SmokeFailure,
@@ -74,58 +76,28 @@ class DeleteXTest(XTest):
 
 
 def _app_id() -> str:
-    return f"dev.lurknotes.LurkNotes.deleteSmoke.s{os.getpid()}"
+    return h.app_id("deleteSmoke")
 
 
 def _start_app(
     data_home: Path, dump: Path, *, undo_ms: int = UNDO_TIMEOUT_MS
 ) -> subprocess.Popen[str]:
     _mark_onboarded(data_home)
-    env = os.environ.copy()
-    env.update(
-        {
-            "XDG_DATA_HOME": str(data_home),
-            "XDG_CONFIG_HOME": str(data_home / "config"),
-            "GDK_BACKEND": "x11",
-            "NO_AT_BRIDGE": "1",
-            "LURKNOTES_APP_ID": _app_id(),
-            "LURKNOTES_TEST_DUMP": str(dump),
+    env = h.make_env(
+        data_home,
+        _app_id(),
+        dump=dump,
+        extra={
             "LURKNOTES_TEST_UNDO_MS": str(undo_ms),
             "LURKNOTES_TEST_CONTROL": "1",
             "LURKNOTES_TEST_PIN_DECK": "1",
-        }
+        },
     )
-    process = subprocess.Popen(
-        [str(ROOT / "lurknotes")],
-        cwd=str(ROOT),
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    process.lurk_app_id = env["LURKNOTES_APP_ID"]  # type: ignore[attr-defined]
-    return process
+    return h.launch([], env)
 
 
-def _ensure_running(process: subprocess.Popen[str]) -> None:
-    if process.poll() is None:
-        return
-    stdout, stderr = process.communicate(timeout=5)
-    raise SmokeFailure(
-        f"app exited with {process.returncode} unexpectedly\n"
-        f"stdout: {stdout[-2000:]}\nstderr: {stderr[-2000:]}"
-    )
-
-
-def _stop(process: subprocess.Popen[str]) -> None:
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
+_ensure_running = h.ensure_running
+_stop = h.stop
 
 
 def _write_deck(path: Path, notes: list[dict], version: int = 1) -> bytes:

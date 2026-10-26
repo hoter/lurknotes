@@ -11,20 +11,18 @@ Timers are injected so the decision is unit-tested on a fake clock.
 
 from __future__ import annotations
 
-from typing import Callable, Protocol
+from typing import Callable
+
+from .timers import Cancel, Handle, Schedule
 
 FOCUS_CHECK_MS = 150
-
-
-class Handle(Protocol):
-    """Opaque timer handle returned by ``schedule``."""
 
 
 class FocusGuard:
     def __init__(
         self,
-        schedule: Callable[[int, Callable[[], None]], Handle],
-        cancel: Callable[[Handle], None],
+        schedule: Schedule,
+        cancel: Cancel,
         *,
         is_focused: Callable[[], bool],
         on_missing: Callable[[], None],

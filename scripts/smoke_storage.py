@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
+import harness as h  # noqa: E402
 import smoke_note as base  # noqa: E402
 
 SmokeFailure = base.SmokeFailure
@@ -44,33 +45,19 @@ def start_app(
     global RUN
     RUN += 1
     base._mark_onboarded(data_home)
-    env = os.environ.copy()
-    env.update(
-        {
-            "XDG_DATA_HOME": str(data_home),
-            "XDG_CONFIG_HOME": str(data_home / "config"),
-            "GDK_BACKEND": "x11",
-            "NO_AT_BRIDGE": "1",
-            "LURKNOTES_APP_ID": (
-                f"dev.lurknotes.LurkNotes.storageSmoke.s{os.getpid()}.r{RUN}"
-            ),
-            "LURKNOTES_TEST_DUMP": str(dump),
-            "LURKNOTES_TEST_CONTROL": "1",
-            "LURKNOTES_TEST_PIN_DECK": "1",
-        }
-    )
+    extra = {
+        "LURKNOTES_TEST_CONTROL": "1",
+        "LURKNOTES_TEST_PIN_DECK": "1",
+    }
     if type_text is not None:
-        env["LURKNOTES_TEST_TYPE"] = type_text
-    process = subprocess.Popen(
-        [str(ROOT / "lurknotes")],
-        cwd=str(ROOT),
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        extra["LURKNOTES_TEST_TYPE"] = type_text
+    env = h.make_env(
+        data_home,
+        h.app_id(f"storageSmoke.r{RUN}"),
+        dump=dump,
+        extra=extra,
     )
-    process.lurk_app_id = env["LURKNOTES_APP_ID"]  # type: ignore[attr-defined]
-    return process
+    return h.launch([], env)
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -262,7 +249,7 @@ def scenario_double_corruption(temporary: Path, xtest_holder: list) -> None:
         if not new_center:
             raise SmokeFailure("fan has no + button after Continue")
         click_center(xtest, fan, new_center, scale)
-        base._wait_for_window(base.NOTE_TITLE, app)
+        note_window = base._wait_for_window(base.NOTE_TITLE, app)
         base._wait_dump(
             dump,
             app,
@@ -287,14 +274,41 @@ def scenario_double_corruption(temporary: Path, xtest_holder: list) -> None:
         quarantined = corrupt_files(notes_dir)
         if len(quarantined) != 1 or quarantined[0].read_bytes() != main_bytes:
             raise SmokeFailure("the corrupt main was not preserved before overwrite")
-        # Once the user acted, the backup follows normal ticket-02 semantics:
-        # the first save of the new deck may replace it on the next save.
-        try:
-            backup_deck = read_json(backup)
-        except (OSError, ValueError) as exc:
-            raise SmokeFailure(f"notes.bak.json became invalid: {exc}") from exc
-        if backup_deck.get("version") != 1:
-            raise SmokeFailure(f"notes.bak.json is not a valid deck: {backup_deck}")
+        # Creation is memory-only now (spec §5.2), so this first save
+        # quarantines the confirmed corrupt main and has no valid previous
+        # deck to copy. A second edit exercises normal ticket-02 backup
+        # semantics: the just-written deck becomes notes.bak.json.
+        base._click_editor(xtest, note_window)
+        xtest.focus(note_window)
+        xtest.type_text("x")
+        edited = typed + "x"
+        base._wait_dump(
+            dump,
+            app,
+            lambda snap: snap.get("text") == edited
+            and snap.get("unsaved") is False,
+            timeout=5.0,
+        )
+        deadline = time.monotonic() + 5.0
+        backup_deck: dict | None = None
+        while time.monotonic() < deadline:
+            try:
+                backup_deck = read_json(backup)
+            except (OSError, ValueError):
+                backup_deck = None
+            if backup_deck and backup_deck.get("version") == 1:
+                break
+            time.sleep(0.05)
+        if backup_deck is None or backup_deck.get("version") != 1:
+            raise SmokeFailure(
+                f"notes.bak.json is not a valid deck after the second save: "
+                f"{backup_deck!r}"
+            )
+        if backup_deck["notes"][0]["text"] != typed:
+            raise SmokeFailure(
+                "the second save did not back up the first saved deck: "
+                f"{backup_deck['notes'][0]['text']!r}"
+            )
         if (notes_dir / "notes.json.tmp").exists():
             raise SmokeFailure("a temp file survived the post-Continue save")
         print("smoke-storage: after Continue the next save quarantined the corrupt file")

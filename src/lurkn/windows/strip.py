@@ -1,4 +1,9 @@
-"""The strip: a narrow undecorated window parked at the edge of the screen."""
+"""The strip: a narrow undecorated window parked at the edge of the screen.
+
+It stays a thin wrapper on purpose: hover controllers, X11 hints and exact
+placement are deck-wide policies owned by the app/placement helper, so putting
+them here would only hide that coupling.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,7 @@ WIDTH = 10
 
 
 class StripWindow(Gtk.Window):
-    """The always-visible handle the pointer grabs to unfold the deck."""
+    """The always-visible strip the pointer grabs to unfold the deck."""
 
     def __init__(self, application: Gtk.Application, height: int) -> None:
         super().__init__(application=application, title=strings.STRIP_TITLE)

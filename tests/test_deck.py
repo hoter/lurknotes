@@ -10,6 +10,7 @@ from lurkn.deck import (
     COLLAPSE_DELAY_MS,
     FAN_DELAY_MS,
     PEEK_DELAY_MS,
+    PEEK_LEAVE_GRACE_MS,
     STATE_FAN,
     STATE_OPEN,
     STATE_STRIP,
@@ -205,7 +206,7 @@ def test_hovering_the_same_tab_again_does_not_restart_the_peek() -> None:
     assert deck.peek_id == "note-a"
 
 
-def test_moving_across_tabs_hides_the_old_peek_and_shows_only_the_new_one() -> None:
+def test_moving_across_tabs_keeps_the_old_peek_until_the_new_one_fires() -> None:
     clock = FakeClock()
     seen: list[str | None] = []
     deck = machine(clock, on_peek=seen.append, on_unpeek=lambda: seen.append(None))
@@ -216,11 +217,54 @@ def test_moving_across_tabs_hides_the_old_peek_and_shows_only_the_new_one() -> N
     assert deck.peek_id == "note-a"
 
     deck.hover_tab("note-b")
-    # The old peek goes away at once; the new one waits its 150 ms.
-    assert deck.peek_id is None
+    # The pane never blanks: the old peek stays while the new 150 ms timer
+    # runs, so on_unpeek is not called between two tab enters.
+    assert deck.peek_id == "note-a"
+    clock.advance(PEEK_DELAY_MS - 1)
+    assert deck.peek_id == "note-a"
+    assert seen == ["note-a"]
+
+    clock.advance(1)
+    assert deck.peek_id == "note-b"
+    assert seen == ["note-a", "note-b"]
+
+
+def test_a_leave_before_enter_keeps_the_pane_filled_until_the_new_peek() -> None:
+    # This is the order GTK actually uses while crossing: leave(old) arrives
+    # before enter(new). The old peek must survive the short grace.
+    clock = FakeClock()
+    seen: list[str | None] = []
+    deck = machine(clock, on_peek=seen.append, on_unpeek=lambda: seen.append(None))
+    deck.hover_enter()
+    clock.advance(FAN_DELAY_MS)
+    deck.hover_tab("note-a")
+    clock.advance(PEEK_DELAY_MS)
+    assert deck.peek_id == "note-a"
+
+    deck.hover_tab_leave("note-a")
+    clock.advance(PEEK_LEAVE_GRACE_MS - 1)
+    assert deck.peek_id == "note-a"
+
+    deck.hover_tab("note-b")
     clock.advance(PEEK_DELAY_MS)
     assert deck.peek_id == "note-b"
-    assert seen == ["note-a", None, "note-b"]
+    assert seen == ["note-a", "note-b"]
+
+
+def test_leaving_a_tab_without_entering_another_hides_after_the_grace() -> None:
+    clock = FakeClock()
+    seen: list[str | None] = []
+    deck = machine(clock, on_peek=seen.append, on_unpeek=lambda: seen.append(None))
+    deck.hover_enter()
+    clock.advance(FAN_DELAY_MS)
+    deck.hover_tab("note-a")
+    clock.advance(PEEK_DELAY_MS)
+
+    deck.hover_tab_leave("note-a")
+    clock.advance(PEEK_LEAVE_GRACE_MS)
+
+    assert deck.peek_id is None
+    assert seen == ["note-a", None]
 
 
 def test_a_leave_from_the_tab_we_just_left_does_not_cancel_the_new_peek() -> None:

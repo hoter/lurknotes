@@ -16,7 +16,9 @@ tickets (drag reorder, All Notes) build on.
 
 from __future__ import annotations
 
-from typing import Callable, Protocol
+from typing import Callable
+
+from .timers import Cancel, Handle, Schedule
 
 STATE_STRIP = "strip"
 STATE_FAN = "fan"
@@ -26,14 +28,10 @@ STATE_OPEN = "open"
 FAN_DELAY_MS = 120
 PEEK_DELAY_MS = 150
 COLLAPSE_DELAY_MS = 400
-
-
-class Handle(Protocol):
-    """Opaque timer handle returned by ``schedule``."""
-
-
-Schedule = Callable[[int, Callable[[], None]], Handle]
-Cancel = Callable[[Handle], None]
+# GTK can send leave(old tab) before enter(new tab) while the pointer crosses.
+# A short grace lets the enter cancel the hide, so the old peek stays until
+# the new 150 ms timer replaces it instead of blanking the pane.
+PEEK_LEAVE_GRACE_MS = 50
 
 
 class DeckMachine:
@@ -52,6 +50,7 @@ class DeckMachine:
         fan_delay_ms: int = FAN_DELAY_MS,
         peek_delay_ms: int = PEEK_DELAY_MS,
         collapse_delay_ms: int = COLLAPSE_DELAY_MS,
+        peek_leave_grace_ms: int = PEEK_LEAVE_GRACE_MS,
         on_panel_shown: Callable[[], None] | None = None,
         on_panel_hidden: Callable[[], None] | None = None,
         on_peek: Callable[[str], None] | None = None,
@@ -62,6 +61,7 @@ class DeckMachine:
         self._fan_delay_ms = fan_delay_ms
         self._peek_delay_ms = peek_delay_ms
         self._collapse_delay_ms = collapse_delay_ms
+        self._peek_leave_grace_ms = peek_leave_grace_ms
 
         self._on_panel_shown = on_panel_shown
         self._on_panel_hidden = on_panel_hidden
@@ -78,6 +78,7 @@ class DeckMachine:
 
         self._expand_timer: Handle | None = None
         self._peek_timer: Handle | None = None
+        self._unpeek_timer: Handle | None = None
         self._collapse_timer: Handle | None = None
 
     # -- queries -------------------------------------------------------
@@ -138,10 +139,11 @@ class DeckMachine:
             return
 
         self._cancel_peek_timer()
-        if self.peek_id is not None and self.peek_id != note_id:
-            # Crossing tabs: drop the old peek at once, then wait 150 ms for
-            # the new one. Showing both would look like a stale peek.
-            self._clear_peek()
+        self._cancel_unpeek_timer()
+        # Crossing tabs must not blank the pane (spec §12.3, "no flicker"):
+        # the previous peek stays until the new tab's 150 ms timer fires and
+        # replaces it in one step. Showing both would look stale; clearing
+        # first would show an empty pane for 150 ms.
         self._hovered_tab = note_id
         if self.peek_id == note_id:
             return
@@ -155,12 +157,21 @@ class DeckMachine:
         A leave from the tab we just crossed away from must not cancel the
         pending peek of the tab we entered (GTK can order the events either
         way), hence the ``_hovered_tab`` check.
+
+        The hide waits for ``PEEK_LEAVE_GRACE_MS``: GTK often delivers
+        leave(old) just before enter(new), and hiding at once would blank the
+        pane until the new 150 ms timer fired. A real departure hides after
+        the short grace; an enter cancels it.
         """
         if self._hovered_tab != note_id:
             return
         self._hovered_tab = None
         self._cancel_peek_timer()
-        self._clear_peek()
+        self._cancel_unpeek_timer()
+        if self.peek_id is not None:
+            self._unpeek_timer = self._schedule(
+                self._peek_leave_grace_ms, self._unpeek_timer_fired
+            )
 
     # -- drag ----------------------------------------------------------
 
@@ -267,10 +278,16 @@ class DeckMachine:
         if self._on_peek is not None:
             self._on_peek(note_id)
 
+    def _unpeek_timer_fired(self) -> None:
+        self._unpeek_timer = None
+        if self._hovered_tab is None:
+            self._clear_peek()
+
     # -- helpers -------------------------------------------------------
 
     def _clear_peek(self) -> None:
         self._cancel_peek_timer()
+        self._cancel_unpeek_timer()
         if self.peek_id is None:
             return
         self.peek_id = None
@@ -287,6 +304,11 @@ class DeckMachine:
             self._cancel(self._peek_timer)
             self._peek_timer = None
 
+    def _cancel_unpeek_timer(self) -> None:
+        if self._unpeek_timer is not None:
+            self._cancel(self._unpeek_timer)
+            self._unpeek_timer = None
+
     def _cancel_collapse(self) -> None:
         if self._collapse_timer is not None:
             self._cancel(self._collapse_timer)
@@ -295,4 +317,5 @@ class DeckMachine:
     def _cancel_all(self) -> None:
         self._cancel_expand()
         self._cancel_peek_timer()
+        self._cancel_unpeek_timer()
         self._cancel_collapse()

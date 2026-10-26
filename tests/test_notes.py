@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import uuid
 
+from conftest import make_note
+
 from lurkn.notes import (
     Note,
     add_at_top,
@@ -22,10 +24,6 @@ SPEC_NOTE = {
     "created": 1793025619.33,
     "updated": 1793025900.12,
 }
-
-
-def make_note(note_id: str, text: str, created: float = 1.0, updated: float = 2.0) -> Note:
-    return Note(id=note_id, text=text, created=created, updated=updated)
 
 
 def test_note_maps_to_the_documented_json_shape():
