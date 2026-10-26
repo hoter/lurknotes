@@ -204,7 +204,7 @@ def test_closing_the_last_untouched_note_leaves_a_saved_empty_deck(tmp_path):
     store.save(notes)
 
     assert notes == []
-    assert store.load() == []
+    assert store.load().notes == []
     assert json.loads((tmp_path / "notes.json").read_text(encoding="utf-8")) == {
         "version": 1,
         "notes": [],
@@ -221,7 +221,7 @@ def test_add_at_top_writes_the_new_order_through_the_store(tmp_path):
     add_at_top(notes, fresh)
     store.save(notes)
 
-    assert [note.id for note in store.load()] == ["fresh", "old"]
+    assert [note.id for note in store.load().notes] == ["fresh", "old"]
 
 
 def test_cycle_wraps_forward_and_backward():

@@ -12,6 +12,31 @@ UNTITLED = "Untitled"
 CLOSE = "×"
 CLOSE_NOTE = "Close note (Esc)"
 SAVE_FAILED = "Save failed"
+SAVE_FAILED_RETRYING = (
+    "Save failed — retrying. Your changes are kept in memory."
+)
+
+# Storage recovery (spec §5.3, §10). Placeholders use str.format.
+STORAGE_RECOVERED = (
+    "The notes file was damaged. {count} note(s) were recovered from the "
+    "backup; the damaged file was kept as {corrupt}."
+)
+STORAGE_CORRUPT = (
+    "The notes file and its backup could not be read. Nothing will overwrite "
+    "the damaged file until you choose Continue."
+)
+STORAGE_UNSUPPORTED = (
+    "This notes file was written by a newer LurkNotes. It is open read-only; "
+    "nothing will be saved."
+)
+STORAGE_RECOVERY_NOT_SAVED = (
+    "Recovered notes from the backup, but saving them failed. Retrying; your "
+    "changes are kept in memory."
+)
+STORAGE_READ_FAILED = "Could not read the notes file: {detail}"
+
+STATUS_CONTINUE = "Continue"
+STATUS_DISMISS = "Dismiss status"
 
 USAGE = "usage: lurknotes [new|all]"
 UNKNOWN_COMMAND = "lurknotes: unknown command {command!r}; " + USAGE

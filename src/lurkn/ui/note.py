@@ -55,12 +55,6 @@ class NotePage(Gtk.Box):
         editor_column.add_css_class("editor-column")
         editor_column.set_hexpand(True)
 
-        self.save_failed = Gtk.Label(label=strings.SAVE_FAILED)
-        self.save_failed.set_xalign(0)
-        self.save_failed.add_css_class("save-failed")
-        self.save_failed.set_visible(False)
-        editor_column.append(self.save_failed)
-
         self.text_view = Gtk.TextView()
         self.text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.text_view.set_left_margin(14)
@@ -165,9 +159,6 @@ class NotePage(Gtk.Box):
 
     def cursor_at_end(self) -> bool:
         return self.cursor_offset() == self.buffer.get_char_count()
-
-    def set_save_failed(self, failed: bool) -> None:
-        self.save_failed.set_visible(failed)
 
     def focus_editor(self) -> None:
         self.text_view.grab_focus()
