@@ -17,7 +17,8 @@ from dataclasses import dataclass
 from typing import Sequence
 
 # Spec §7.2: a release closer than 5 px to the press is a click; 5 px or more
-# is a drag. The distance is Euclidean in logical (GTK) pixels.
+# is a drag. The offset is compared per axis, in logical (GTK) pixels, so a
+# small diagonal jitter (4 px on each axis) stays a click.
 DRAG_THRESHOLD_PX = 5.0
 
 CLICK = "click"
