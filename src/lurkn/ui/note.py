@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from typing import Callable, Sequence
 
-from gi.repository import Gtk, Pango
+from gi.repository import Gdk, Gtk, Pango
 
 from .. import strings
+from ..editor import (
+    BOLD,
+    ITALIC,
+    TextEdit,
+    continue_list,
+    remove_marker_before_cursor,
+    wrap_selection,
+)
 from ..notes import Note
 
 RAIL_WIDTH = 112
@@ -64,6 +72,14 @@ class NotePage(Gtk.Box):
         self.text_view.add_css_class("editor")
         self.buffer = self.text_view.get_buffer()
         self.buffer.connect("changed", self._on_buffer_changed)
+
+        # Spec §7.3 / decision 12: Ctrl+B/I, list continuation and marker
+        # backspace are plain-text edits. Capture phase runs before the
+        # TextView's own bindings; unhandled keys fall through unchanged.
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._on_editor_key)
+        self.text_view.add_controller(keys)
 
         text_scroller = Gtk.ScrolledWindow()
         text_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -174,6 +190,82 @@ class NotePage(Gtk.Box):
 
     def focus_editor(self) -> None:
         self.text_view.grab_focus()
+
+    def _on_editor_key(self, _controller, keyval, _keycode, state) -> bool:
+        if not self.text_view.get_editable():
+            return False
+        control = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        alt = bool(state & Gdk.ModifierType.ALT_MASK)
+        if control and not alt:
+            if keyval in (Gdk.KEY_b, Gdk.KEY_B):
+                return self._wrap_selection(BOLD)
+            if keyval in (Gdk.KEY_i, Gdk.KEY_I):
+                return self._wrap_selection(ITALIC)
+            # Panel-level Ctrl+Backspace/Ctrl+Z/Ctrl+Tab must keep working;
+            # this controller only handles the plain variants.
+            return False
+        if alt:
+            return False
+
+        selection = self._selection()
+        if selection is not None:
+            # Let the TextView replace a real selection normally.
+            return False
+        cursor = self.buffer.get_iter_at_mark(self.buffer.get_insert()).get_offset()
+        text = self.text()
+
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            edit = continue_list(text, cursor)
+        elif keyval == Gdk.KEY_BackSpace:
+            edit = remove_marker_before_cursor(text, cursor)
+        else:
+            return False
+        if edit is None:
+            return False
+        self._apply_edit(edit)
+        return True
+
+    def _wrap_selection(self, marker: str) -> bool:
+        selection = self._selection()
+        if selection is None:
+            cursor = self.buffer.get_iter_at_mark(
+                self.buffer.get_insert()
+            ).get_offset()
+            selection = (cursor, cursor)
+        start, end = selection
+        self._apply_edit(wrap_selection(self.text(), start, end, marker))
+        return True
+
+    def _selection(self) -> tuple[int, int] | None:
+        # PyGObject returns ``()`` for no selection and the two iterators when
+        # there is one (some versions include the boolean first).
+        bounds = self.buffer.get_selection_bounds()
+        if not bounds:
+            return None
+        if len(bounds) == 3:
+            found, start, end = bounds
+            if not found:
+                return None
+        else:
+            start, end = bounds
+        return start.get_offset(), end.get_offset()
+
+    def _apply_edit(self, edit: TextEdit) -> None:
+        """Replace the buffer and restore the caret/selection from *edit*.
+
+        The buffer stays plain text; only characters and offsets change. The
+        resulting ``changed`` signal is what starts the normal 400 ms autosave.
+        """
+        self.buffer.set_text(edit.text)
+        start = self.buffer.get_iter_at_offset(edit.start)
+        if edit.start == edit.end:
+            self.buffer.place_cursor(start)
+        else:
+            end = self.buffer.get_iter_at_offset(edit.end)
+            self.buffer.select_range(start, end)
+        self.text_view.scroll_to_mark(
+            self.buffer.get_insert(), 0.0, False, 0.0, 0.0
+        )
 
     def _on_buffer_changed(self, _buffer: Gtk.TextBuffer) -> None:
         if not self._loading:
