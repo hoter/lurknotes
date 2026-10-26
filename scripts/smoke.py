@@ -82,8 +82,16 @@ def _strip_windows(pid: int | None = None) -> list[str]:
 
 
 def _window_pid(window: str) -> int | None:
-    output = _run("xprop", "-id", window, "_NET_WM_PID")
-    match = re.search(r"_NET_WM_PID\(CARDINAL\)\s*=\s*(\d+)", output)
+    """Owner of *window*, or None if it vanished (another instance's window)."""
+    result = subprocess.run(
+        ["xprop", "-id", window, "_NET_WM_PID"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    match = re.search(r"_NET_WM_PID\(CARDINAL\)\s*=\s*(\d+)", result.stdout)
     return int(match.group(1)) if match else None
 
 
@@ -172,6 +180,36 @@ def _stop(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=5)
 
 
+def _assert_app_id_free(app_id: str) -> None:
+    """A same-id instance would receive this launch and exit 0 (PLATFORM §10).
+
+    Only *our* id matters: another worktree's LurkNotes has a different id and
+    may legitimately be on screen while this smoke runs.
+    """
+    result = subprocess.run(
+        [
+            "gdbus",
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.DBus",
+            "--object-path",
+            "/org/freedesktop/DBus",
+            "--method",
+            "org.freedesktop.DBus.NameHasOwner",
+            app_id,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        # No gdbus or no session bus; the spawn below would fail visibly.
+        return
+    if "true" in result.stdout.lower():
+        raise SmokeFailure(f"another LurkNotes instance owns {app_id}; retry")
+
+
 def main() -> int:
     app: subprocess.Popen[str] | None = None
     try:
@@ -179,18 +217,14 @@ def main() -> int:
         # process with the same id would hand the launch to the existing one
         # and exit, so the smoke test uses its own id and checks that the
         # window belongs to the process it spawned (_NET_WM_PID).
-        existing = _strip_windows()
-        if existing:
-            raise SmokeFailure(
-                "another LurkNotes instance is already running "
-                f"(window {', '.join(existing)}); stop it and retry"
-            )
+        app_id = f"dev.lurknotes.LurkNotes.smoke.s{os.getpid()}"
+        _assert_app_id_free(app_id)
 
         with tempfile.TemporaryDirectory(prefix="lurknotes-smoke-") as data_home:
             env = os.environ.copy()
             env["XDG_DATA_HOME"] = data_home
             env["NO_AT_BRIDGE"] = "1"
-            env["LURKNOTES_APP_ID"] = f"dev.lurknotes.LurkNotes.smoke.s{os.getpid()}"
+            env["LURKNOTES_APP_ID"] = app_id
             app = subprocess.Popen(
                 [str(ROOT / "lurknotes")],
                 cwd=str(ROOT),

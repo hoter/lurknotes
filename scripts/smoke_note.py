@@ -46,6 +46,9 @@ STARTUP_TIMEOUT = 10.0
 SETTLE_TIMEOUT = 5.0
 DUMP_TIMEOUT = 8.0
 SAVE_TIMEOUT = 3.0
+# Another worktree's LurkNotes can cover ours for the length of its own test
+# run; wait that out instead of failing on a transient overlay.
+COVER_TIMEOUT = 20.0
 
 
 class SmokeFailure(Exception):
@@ -100,8 +103,16 @@ def _windows_titled(title: str, pid: int | None = None) -> list[str]:
 
 
 def _window_pid(window: str) -> int | None:
-    output = _run("xprop", "-id", window, "_NET_WM_PID")
-    match = re.search(r"_NET_WM_PID\(CARDINAL\)\s*=\s*(\d+)", output)
+    """Owner of *window*, or None if it vanished (another instance's window)."""
+    result = subprocess.run(
+        ["xprop", "-id", window, "_NET_WM_PID"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    match = re.search(r"_NET_WM_PID\(CARDINAL\)\s*=\s*(\d+)", result.stdout)
     return int(match.group(1)) if match else None
 
 
@@ -214,7 +225,10 @@ def _bit_shift(mask: int) -> int:
     return shift
 
 
-def _check_dark(window: str, *, rail: bool = False) -> None:
+def _pixel_sampler(
+    image: tuple[bytes, int, int, int, int, int, int, int, int, int, int],
+) -> tuple[Callable[[int, int], tuple[int, int, int]], int, int]:
+    """Decode an ``xwd`` dump into a ``pixel(x, y)`` closure."""
     (
         data,
         offset,
@@ -226,7 +240,7 @@ def _check_dark(window: str, *, rail: bool = False) -> None:
         red_mask,
         green_mask,
         blue_mask,
-    ) = _xwd_image(window)
+    ) = image
     bytes_per_pixel = (bits_per_pixel + 7) // 8
     endian = "little" if byte_order == 0 else "big"
     red_shift = _bit_shift(red_mask)
@@ -235,14 +249,34 @@ def _check_dark(window: str, *, rail: bool = False) -> None:
 
     def pixel(x: int, y: int) -> tuple[int, int, int]:
         start = offset + y * bytes_per_line + x * bytes_per_pixel
-        value = int.from_bytes(
-            data[start : start + bytes_per_pixel], endian
-        )
+        value = int.from_bytes(data[start : start + bytes_per_pixel], endian)
         return (
             (value & red_mask) >> red_shift,
             (value & green_mask) >> green_shift,
             (value & blue_mask) >> blue_shift,
         )
+
+    return pixel, width, height
+
+
+def _wait_rail(window: str, timeout: float = SETTLE_TIMEOUT) -> None:
+    """Wait for the note page's rail to be drawn (#17171d, spec §6.5).
+
+    ``Gtk.Window.set_title`` lands before the stack switches from the fan to
+    the note page, so a capture taken the instant the title changes can still
+    show the fan; without this the rail check fails intermittently.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pixel, _width, height = _pixel_sampler(_xwd_image(window))
+        if pixel(0, height - 1) == (23, 23, 29):
+            return
+        time.sleep(0.05)
+    raise SmokeFailure("the tab rail never appeared in the note window")
+
+
+def _check_dark(window: str, *, rail: bool = False) -> None:
+    pixel, width, height = _pixel_sampler(_xwd_image(window))
 
     if rail:
         # The note page has the tab rail (#17171d) down its left side.
@@ -282,6 +316,10 @@ def _check_dark(window: str, *, rail: bool = False) -> None:
 # -- app process ---------------------------------------------------------
 
 
+def _app_id() -> str:
+    return f"dev.lurknotes.LurkNotes.note-smoke.s{os.getpid()}"
+
+
 def _start_app(data_home: Path, dump: Path, type_text: str | None) -> subprocess.Popen[str]:
     env = os.environ.copy()
     env.update(
@@ -290,7 +328,7 @@ def _start_app(data_home: Path, dump: Path, type_text: str | None) -> subprocess
             "XDG_CONFIG_HOME": str(data_home / "config"),
             "GDK_BACKEND": "x11",
             "NO_AT_BRIDGE": "1",
-            "LURKNOTES_APP_ID": f"dev.lurknotes.LurkNotes.note-smoke.s{os.getpid()}",
+            "LURKNOTES_APP_ID": _app_id(),
             "LURKNOTES_TEST_DUMP": str(dump),
         }
     )
@@ -325,6 +363,22 @@ def _stop(process: subprocess.Popen[str]) -> None:
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=5)
+
+
+def _wait_for_exit(process: subprocess.Popen[str], timeout: float = 5.0) -> int:
+    """Wait for a normal shutdown triggered from outside the process."""
+    try:
+        process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise SmokeFailure(
+            "the app did not exit within "
+            f"{timeout:.0f}s after the WM close request"
+        ) from exc
+    if process.returncode != 0:
+        raise SmokeFailure(
+            f"the app exited with {process.returncode} after the WM close request"
+        )
+    return process.returncode
 
 
 def _wait_for_window(
@@ -367,6 +421,23 @@ def _wait_dump(
 # -- pointer / XTest -----------------------------------------------------
 
 
+class _ClientMessage(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_int),
+        ("serial", ctypes.c_ulong),
+        ("send_event", ctypes.c_int),
+        ("display", ctypes.c_void_p),
+        ("window", ctypes.c_ulong),
+        ("message_type", ctypes.c_ulong),
+        ("format", ctypes.c_int),
+        ("data", ctypes.c_long * 5),
+    ]
+
+
+class _ClientEvent(ctypes.Union):
+    _fields_ = [("xclient", _ClientMessage), ("pad", ctypes.c_long * 24)]
+
+
 class XTest:
     """Real X11 pointer clicks, because xdotool is not installed."""
 
@@ -382,6 +453,17 @@ class XTest:
         self.xlib.XFlush.argtypes = [ctypes.c_void_p]
         self.xlib.XCloseDisplay.restype = ctypes.c_int
         self.xlib.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        self.xlib.XInternAtom.restype = ctypes.c_ulong
+        self.xlib.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+        self.xlib.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        self.xlib.XSendEvent.restype = ctypes.c_int
+        self.xlib.XSendEvent.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.c_long,
+            ctypes.c_void_p,
+        ]
         self.xlib.XQueryPointer.restype = ctypes.c_int
         self.xlib.XQueryPointer.argtypes = [
             ctypes.c_void_p,
@@ -443,13 +525,72 @@ class XTest:
         return root_x.value, root_y.value
 
     def click(self, x: int, y: int) -> None:
-        self.xtst.XTestFakeMotionEvent(self.display, -1, x, y, 0)
-        self.xlib.XFlush(self.display)
-        time.sleep(0.15)
+        self.move(x, y)
         self.xtst.XTestFakeButtonEvent(self.display, 1, 1, 0)
         self.xlib.XFlush(self.display)
         time.sleep(0.08)
         self.xtst.XTestFakeButtonEvent(self.display, 1, 0, 0)
+        self.xlib.XFlush(self.display)
+
+    def move(self, x: int, y: int) -> None:
+        self.xtst.XTestFakeMotionEvent(self.display, -1, x, y, 0)
+        self.xlib.XFlush(self.display)
+        time.sleep(0.05)
+
+    def top_window_at_pointer(self) -> int | None:
+        """The root child under the pointer, i.e. the window a click hits."""
+        root_return = ctypes.c_ulong()
+        child_return = ctypes.c_ulong()
+        root_x, root_y, win_x, win_y = (ctypes.c_int() for _ in range(4))
+        mask = ctypes.c_uint()
+        ok = self.xlib.XQueryPointer(
+            self.display,
+            self._root,
+            ctypes.byref(root_return),
+            ctypes.byref(child_return),
+            ctypes.byref(root_x),
+            ctypes.byref(root_y),
+            ctypes.byref(win_x),
+            ctypes.byref(win_y),
+            ctypes.byref(mask),
+        )
+        if not ok:
+            return None
+        return child_return.value or None
+
+    def raise_window(self, window: str) -> None:
+        """Lift our window above another LurkNotes on the same screen edge.
+
+        A second instance from another worktree uses the same ABOVE layer and
+        the same rect. Its window would swallow the XTest click and hide ours
+        from ``xwd``, so re-raise ours right before touching the screen. The
+        other process is left alone.
+        """
+        self.xlib.XRaiseWindow(self.display, int(window, 16))
+        self.xlib.XFlush(self.display)
+        time.sleep(0.05)
+
+    def close_window(self, window: str) -> None:
+        """Send WM_DELETE_WINDOW, exactly what a window manager's × sends.
+
+        Alt+F4 and the overview close button deliver the same client message,
+        so this exercises the real shutdown path rather than a signal.
+        """
+        xid = int(window, 16)
+        event = _ClientEvent()
+        event.xclient.type = 33  # ClientMessage
+        event.xclient.serial = 0
+        event.xclient.send_event = 1
+        event.xclient.display = self.display
+        event.xclient.window = xid
+        event.xclient.message_type = self.xlib.XInternAtom(
+            self.display, b"WM_PROTOCOLS", 0
+        )
+        event.xclient.format = 32
+        event.xclient.data[0] = self.xlib.XInternAtom(
+            self.display, b"WM_DELETE_WINDOW", 0
+        )
+        self.xlib.XSendEvent(self.display, xid, 0, 0, ctypes.byref(event))
         self.xlib.XFlush(self.display)
 
     def restore(self) -> None:
@@ -485,6 +626,17 @@ class XTest:
             else:
                 self._tap(ord(character))
             time.sleep(0.01)
+
+    def ctrl_q(self) -> None:
+        control = self.xlib.XKeysymToKeycode(self.display, 0xFFE3)
+        q = self.xlib.XKeysymToKeycode(self.display, 0x71)
+        self.xtst.XTestFakeKeyEvent(self.display, control, 1, 0)
+        self.xlib.XFlush(self.display)
+        time.sleep(0.03)
+        self.xtst.XTestFakeKeyEvent(self.display, q, 1, 0)
+        self.xtst.XTestFakeKeyEvent(self.display, q, 0, 0)
+        self.xtst.XTestFakeKeyEvent(self.display, control, 0, 0)
+        self.xlib.XFlush(self.display)
 
     def ctrl_tab(self, backward: bool = False) -> None:
         control = self.xlib.XKeysymToKeycode(self.display, 0xFFE3)
@@ -565,6 +717,72 @@ def _check_fan(panel: str) -> dict[str, int | str]:
     return info
 
 
+def _raise_until_top(
+    xtest: XTest, window: str, x: int, y: int, label: str
+) -> None:
+    """Make sure *window* is the one a click at x,y would hit.
+
+    Another worktree's LurkNotes uses the same screen edge and the same
+    ``_NET_WM_STATE_ABOVE`` layer. A click sent while its window is on top
+    goes to the wrong process. Raising ours and reading back the window under
+    the pointer makes the check explicit instead of hoping for stacking luck.
+    The other process is never touched.
+    """
+    xid = int(window, 16)
+    deadline = time.monotonic() + COVER_TIMEOUT
+    while time.monotonic() < deadline:
+        xtest.move(x, y)
+        xtest.raise_window(window)
+        if xtest.top_window_at_pointer() == xid:
+            return
+        time.sleep(0.1)
+    foreign = xtest.top_window_at_pointer()
+    raise SmokeFailure(
+        f"another window (0x{foreign:x}) covers {label} at {x},{y}"
+        if foreign
+        else f"nothing is under {label} at {x},{y}"
+    )
+
+
+def _raise_for_capture(
+    xtest: XTest,
+    window: str,
+    label: str,
+    points: tuple[tuple[int, int], ...] = (
+        (1, 1),
+        (378, 1),
+        (1, 926),
+        (378, 926),
+        (190, 926),
+    ),
+) -> None:
+    """Same as :func:`_raise_until_top`, for pixel snapshots.
+
+    ``xwd`` on an obscured window returns garbage, which would look like a
+    light-theme failure. The points are the corners and bottom-centre that
+    ``_check_dark`` samples, so a covered window is caught before capture.
+    """
+    scale = _effective_scale()
+    xid = int(window, 16)
+    deadline = time.monotonic() + COVER_TIMEOUT
+    while time.monotonic() < deadline:
+        # The panel is re-placed by its map handler, so read the rect each
+        # pass instead of computing the points once.
+        info = _window_info(window)
+        left, top = int(info["x"]), int(info["y"])
+        clear = True
+        for px, py in points:
+            xtest.move(left + round(px * scale), top + round(py * scale))
+            xtest.raise_window(window)
+            if xtest.top_window_at_pointer() != xid:
+                clear = False
+                break
+        if clear:
+            return
+        time.sleep(0.1)
+    raise SmokeFailure(f"another window covers {label}; cannot capture pixels")
+
+
 def _click_first_tab(xtest: XTest, panel: str, snapshot: dict) -> None:
     centers = snapshot.get("tab_centers") or []
     if not centers:
@@ -573,6 +791,7 @@ def _click_first_tab(xtest: XTest, panel: str, snapshot: dict) -> None:
     scale = _effective_scale()
     x = int(info["x"]) + round(centers[0][0] * scale)
     y = int(info["y"]) + round(centers[0][1] * scale)
+    _raise_until_top(xtest, panel, x, y, "the first tab")
     xtest.click(x, y)
     print(f"smoke-note: clicked first tab at {x},{y}")
 
@@ -584,6 +803,7 @@ def _click_center(
     scale = _effective_scale()
     x = int(info["x"]) + round(center[0] * scale)
     y = int(info["y"]) + round(center[1] * scale)
+    _raise_until_top(xtest, window, x, y, label)
     xtest.click(x, y)
     print(f"smoke-note: clicked {label} at {x},{y}")
 
@@ -673,6 +893,7 @@ def _click_editor(xtest: XTest, note_window: str) -> None:
     scale = _effective_scale()
     x = int(info["x"]) + round((112 + 50) * scale)
     y = int(info["y"]) + round(120 * scale)
+    _raise_until_top(xtest, note_window, x, y, "the editor")
     xtest.click(x, y)
 
 
@@ -718,23 +939,50 @@ def _wait_for_text_on_disk(path: Path, expected: str) -> dict:
     raise SmokeFailure(f"text was not saved within {SAVE_TIMEOUT:.0f}s; last: {last}")
 
 
-def _assert_no_instance() -> None:
-    running = [
-        title
-        for title in (STRIP_TITLE, FAN_TITLE, NOTE_TITLE)
-        if _windows_titled(title)
-    ]
-    if running:
-        raise SmokeFailure(
-            "another LurkNotes instance is already running "
-            f"({', '.join(running)}); stop it and retry"
-        )
+def _assert_app_id_free(app_id: str) -> None:
+    """A same-id instance would receive our launch and exit 0 (PLATFORM §10).
+
+    Only *our* id matters: another worktree's LurkNotes has a different id and
+    may legitimately be on screen while this smoke runs.
+    """
+    result = subprocess.run(
+        [
+            "gdbus",
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.DBus",
+            "--object-path",
+            "/org/freedesktop/DBus",
+            "--method",
+            "org.freedesktop.DBus.NameHasOwner",
+            app_id,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        # No gdbus or no session bus; the spawn below would fail visibly.
+        return
+    if "true" in result.stdout.lower():
+        raise SmokeFailure(f"another LurkNotes instance owns {app_id}; retry")
 
 
-def _wait_for_no_windows(titles: tuple[str, ...], timeout: float = 5.0) -> None:
+def _wait_for_no_windows(
+    titles: tuple[str, ...],
+    process: subprocess.Popen[str],
+    timeout: float = 5.0,
+) -> None:
+    """Wait until this process's windows are gone.
+
+    Filtering by ``_NET_WM_PID`` is what keeps a concurrent LurkNotes from a
+    different worktree (same window titles, different app id) from failing
+    this check.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not any(_windows_titled(title) for title in titles):
+        if not any(_windows_titled(title, process.pid) for title in titles):
             return
         time.sleep(0.05)
     raise SmokeFailure(f"windows survived shutdown: {titles}")
@@ -744,7 +992,7 @@ def main() -> int:
     app: subprocess.Popen[str] | None = None
     xtest: XTest | None = None
     try:
-        _assert_no_instance()
+        _assert_app_id_free(_app_id())
 
         with tempfile.TemporaryDirectory(prefix="lurknotes-smoke-note-") as temporary:
             data_home = Path(temporary)
@@ -792,6 +1040,8 @@ def main() -> int:
             app = _start_app(data_home, dump, typed)
             _wait_for_window(STRIP_TITLE, app)
             fan = _wait_for_window(FAN_TITLE, app)
+            xtest = XTest()
+            _raise_for_capture(xtest, fan, "the fan")
             _check_fan(fan)
 
             fan_snapshot = _wait_dump(
@@ -805,11 +1055,10 @@ def main() -> int:
                     f"fan titles are {fan_snapshot.get('titles')}, expected array order"
                 )
 
-            xtest = XTest()
             note_window = _click_until_note_open(xtest, app, fan, fan_snapshot)
-            _wait_geometry(note_window, _expected_panel_rect(_effective_scale()))
-            _check_dark(note_window, rail=True)
-
+            # Read the dump before the pixel checks: the type hook fires 600 ms
+            # after the note opens, and a slow capture would hide the
+            # "nothing typed yet" snapshot this asserts.
             open_snapshot = _wait_dump(
                 dump,
                 app,
@@ -833,6 +1082,11 @@ def main() -> int:
             )
             if typed_snapshot.get("current_id") != first_id:
                 raise SmokeFailure("editor opened a different note")
+
+            _wait_geometry(note_window, _expected_panel_rect(_effective_scale()))
+            _wait_rail(note_window)
+            _raise_for_capture(xtest, note_window, "the note page")
+            _check_dark(note_window, rail=True)
             print("smoke-note: tab click opened the note, cursor at end, text inserted")
 
             _wait_for_text_on_disk(notes_path, expected_text)
@@ -846,7 +1100,7 @@ def main() -> int:
 
             app.kill()  # SIGKILL: the debounce/save must already be durable
             app.wait(timeout=5)
-            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE))
+            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE), app)
 
             after_kill = json.loads(notes_path.read_text(encoding="utf-8"))
             if after_kill.get("version") != 1:
@@ -975,7 +1229,10 @@ def main() -> int:
                 and snapshot.get("current_id") == first_id
                 and snapshot.get("ids") == base_ids
                 and snapshot.get("text") == closed_text
-                and snapshot.get("cursor_at_end") is True,
+                and snapshot.get("cursor_at_end") is True
+                # The highlight follows the id, and the rail is in array order,
+                # so first_id must be row 0 even though titles differ.
+                and snapshot.get("active_index") == 0,
             )
             if rail_open["current_id"] in switched.get("ids", []):
                 raise SmokeFailure("switching notes kept the untouched note")
@@ -1064,7 +1321,7 @@ def main() -> int:
             print("smoke-note: typed new note stayed at the top and was saved")
 
             _stop(app)
-            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE))
+            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE), app)
             final_dump = data_home / "final-dump.json"
             app = _start_app(data_home, final_dump, None)
             _wait_for_window(STRIP_TITLE, app)
@@ -1090,7 +1347,7 @@ def main() -> int:
             # Empty deck: + is the way in, and closing the last untouched
             # note returns to a saved empty deck.
             _stop(app)
-            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE))
+            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE), app)
             empty_home = data_home / "empty"
             empty_notes = empty_home / "lurknotes" / "notes.json"
             empty_dump = data_home / "empty-dump.json"
@@ -1130,6 +1387,145 @@ def main() -> int:
             )
             _wait_for_ids_on_disk(empty_notes, [])
             print("smoke-note: empty deck accepted + and saved after the last note closed")
+
+            # -- normal shutdown ----------------------------------------
+            # Closing the window (or Ctrl+Q) is a normal shutdown: flush the
+            # pending text, drop untouched notes created this session, then
+            # save. A SIGTERM would prove nothing here, so send the real
+            # WM_DELETE_WINDOW a window manager sends (spec §5.2, §5.4).
+            _stop(app)
+            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE), app)
+            quit_text = "quit flush"
+            quit_dump = data_home / "shutdown-flush-dump.json"
+            app = _start_app(empty_home, quit_dump, quit_text)
+            _wait_for_window(STRIP_TITLE, app)
+            quit_fan = _wait_dump(
+                quit_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "fan"
+                and snapshot.get("ids") == []
+                and snapshot.get("new_button_center") is not None,
+            )
+            _click_center(
+                xtest,
+                _wait_for_window(FAN_TITLE, app),
+                quit_fan["new_button_center"],
+                "+ before quitting with unsaved text",
+            )
+            # The test hook types and dumps before the 400 ms autosave fires.
+            _wait_dump(
+                quit_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("text") == quit_text,
+            )
+            xtest.close_window(_wait_for_window(NOTE_TITLE, app))
+            _wait_for_exit(app)
+            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE), app)
+            saved = json.loads(empty_notes.read_text(encoding="utf-8"))
+            typed_ids = [note["id"] for note in saved["notes"]]
+            if len(typed_ids) != 1:
+                raise SmokeFailure(
+                    f"shutdown saved {typed_ids}, expected just the typed note"
+                )
+            if saved["notes"][0]["text"] != quit_text:
+                raise SmokeFailure("shutdown lost text typed before the debounce fired")
+            print("smoke-note: quit flushed the pending text instead of dropping it")
+
+            # The same quit path must drop an untouched note created now: if
+            # it reached the file it would come back as a loaded empty note.
+            discard_dump = data_home / "shutdown-discard-dump.json"
+            app = _start_app(empty_home, discard_dump, None)
+            _wait_for_window(STRIP_TITLE, app)
+            discard_fan = _wait_dump(
+                discard_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "fan"
+                and snapshot.get("ids") == typed_ids
+                and snapshot.get("new_button_center") is not None,
+            )
+            _click_center(
+                xtest,
+                _wait_for_window(FAN_TITLE, app),
+                discard_fan["new_button_center"],
+                "+ before quitting untouched",
+            )
+            opened = _wait_dump(
+                discard_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("ids", [None])[0] == snapshot.get("current_id")
+                and snapshot.get("ids", [])[1:] == typed_ids
+                and snapshot.get("text") == ""
+                and snapshot.get("active_index") == 0,
+            )
+            untouched_id = opened["current_id"]
+            _wait_for_ids_on_disk(empty_notes, [untouched_id, *typed_ids])
+            xtest.close_window(_wait_for_window(NOTE_TITLE, app))
+            _wait_for_exit(app)
+            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE), app)
+            saved = json.loads(empty_notes.read_text(encoding="utf-8"))
+            kept = [note["id"] for note in saved["notes"]]
+            if kept != typed_ids:
+                raise SmokeFailure(
+                    f"quit left {kept} on disk, expected only {typed_ids}"
+                )
+            print("smoke-note: quitting dropped the untouched note and kept the typed one")
+
+            # Ctrl+Q is the other normal-shutdown path; the accelerator must
+            # reach app.quit and run the same cleanup.
+            ctrlq_dump = data_home / "shutdown-ctrlq-dump.json"
+            app = _start_app(empty_home, ctrlq_dump, None)
+            _wait_for_window(STRIP_TITLE, app)
+            ctrlq_fan = _wait_dump(
+                ctrlq_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "fan"
+                and snapshot.get("tab_centers"),
+            )
+            _click_first_tab(
+                xtest, _wait_for_window(FAN_TITLE, app), ctrlq_fan
+            )
+            ctrlq_note = _wait_for_window(NOTE_TITLE, app)
+            _wait_dump(
+                ctrlq_dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open",
+            )
+            for attempt in range(1, 4):
+                _click_editor(xtest, ctrlq_note)
+                xtest.ctrl_q()
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline and app.poll() is None:
+                    time.sleep(0.05)
+                if app.poll() is not None:
+                    break
+                print(f"smoke-note: Ctrl+Q attempt {attempt} did not quit")
+            else:
+                raise SmokeFailure("Ctrl+Q did not quit the app")
+            if app.returncode != 0:
+                raise SmokeFailure(f"Ctrl+Q exited with {app.returncode}")
+            _wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE), app)
+            saved = json.loads(empty_notes.read_text(encoding="utf-8"))
+            if [note["id"] for note in saved["notes"]] != typed_ids:
+                raise SmokeFailure("Ctrl+Q did not go through the shutdown cleanup")
+            print("smoke-note: Ctrl+Q quits through the same shutdown path")
+
+            # And the next launch must not resurrect it as a loaded empty note.
+            restart_dump_final = data_home / "shutdown-restart-dump.json"
+            app = _start_app(empty_home, restart_dump_final, None)
+            _wait_for_window(STRIP_TITLE, app)
+            after_quit = _wait_dump(
+                restart_dump_final,
+                app,
+                lambda snapshot: snapshot.get("state") == "fan"
+                and snapshot.get("ids") == typed_ids,
+            )
+            if after_quit.get("titles") != [quit_text]:
+                raise SmokeFailure(
+                    f"deck after quit is {after_quit.get('titles')}"
+                )
+            print("smoke-note: the untouched note did not resurrect after a quit")
 
             print("smoke-note: OK")
             return 0
