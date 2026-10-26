@@ -167,6 +167,33 @@ window.lurk {
   padding: 2px 8px;
 }
 
+/* Spec §9.5: visible proof that the panel did not get the keyboard. */
+.lurk .focus-hint {
+  background-color: #3d3d4c;
+  color: #e9e9f1;
+  border: 1px solid #6f6f7e;
+  border-radius: 8px;
+  padding: 6px 14px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+/* Spec §4.6: one-time hotkey instructions, non-modal. */
+.lurk .onboarding {
+  background-color: #2b2b35;
+  color: #e9e9f1;
+  border-bottom: 1px solid #17171d;
+  padding: 8px 10px;
+}
+
+.lurk .onboarding .onboarding-text {
+  color: #e9e9f1;
+  font-size: 0.9em;
+}
+
+.lurk .onboarding button {
+  padding: 2px 8px;
+}
+
 /* Scrollbars: the default light adwaita trough is a white strip on the dark
    fan and the editor. Spec §6.5 wants every surface dark. */
 .lurk scrollbar {

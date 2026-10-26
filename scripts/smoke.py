@@ -221,6 +221,11 @@ def main() -> int:
         _assert_app_id_free(app_id)
 
         with tempfile.TemporaryDirectory(prefix="lurknotes-smoke-") as data_home:
+            # Returning user: ticket 09's onboarding banner is covered by its
+            # own smoke against a fresh data dir.
+            marker = Path(data_home) / "lurknotes" / "onboarded"
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("onboarded\n", encoding="utf-8")
             env = os.environ.copy()
             env["XDG_DATA_HOME"] = data_home
             env["NO_AT_BRIDGE"] = "1"

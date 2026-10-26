@@ -182,6 +182,21 @@ class DeckMachine:
 
     # -- deck transitions ---------------------------------------------
 
+    def expand_now(self) -> bool:
+        """strip -> fan immediately, without the hover delay (spec §9.3).
+
+        ``lurknotes`` with no arguments expands the fan at once; waiting 120 ms
+        for a pointer that is not there would make the cold start look dead.
+        Never collapses: an open note stays open.
+        """
+        if self.state != STATE_STRIP:
+            return False
+        self._cancel_all()
+        self.state = STATE_FAN
+        if self._on_panel_shown is not None:
+            self._on_panel_shown()
+        return True
+
     def open(self, note_id: str) -> None:
         """A note was opened in the editor (spec §3)."""
         self._cancel_all()

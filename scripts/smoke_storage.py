@@ -43,6 +43,7 @@ def start_app(
 ) -> subprocess.Popen[str]:
     global RUN
     RUN += 1
+    base._mark_onboarded(data_home)
     env = os.environ.copy()
     env.update(
         {

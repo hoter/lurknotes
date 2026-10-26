@@ -142,6 +142,23 @@ def add_at_top(notes: list[Note], note: Note) -> None:
     notes.insert(0, note)
 
 
+def session_untouched_note(
+    notes: list[Note], current_id: str | None, session_ids: set[str]
+) -> Note | None:
+    """The open note if a repeated ``new`` should reuse it (spec §9.3).
+
+    A note qualifies only when it is current, untouched *and* created by this
+    session: a loaded empty note has untouched-looking timestamps but deserves
+    to be left alone, not reused as the target of a hotkey (spec §5.4).
+    """
+    if current_id is None:
+        return None
+    note = find_note(notes, current_id)
+    if note is None or note.id not in session_ids or not note.is_untouched():
+        return None
+    return note
+
+
 def discard_if_untouched(
     notes: list[Note], note_id: str, session_ids: set[str]
 ) -> Note | None:
