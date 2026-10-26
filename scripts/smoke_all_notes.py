@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Prove ticket 07 through the real X11 UI.
 
-Run 1: ``LURKNOTES_TEST_OPEN_ALL`` opens All Notes; the window is a normal
-720x560 resizable window centred on the workarea; the list is in manual deck
-order; search narrows to the notes containing the substring and shows the
+Run 1: the real ``lurknotes all`` command opens All Notes; the window is a
+normal 720x560 resizable window centred on the workarea; the list is in manual
+deck order; search narrows to the notes containing the substring and shows the
 matching line with the match bolded; clearing restores every note; clicking a
 row opens that note in the edge panel while All Notes stays mapped; text typed
 in the panel appears in a fresh search without reopening All Notes; the menu's
@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
+import harness as h  # noqa: E402
 import smoke_note as base  # noqa: E402
 
 from lurkn.strings import (  # noqa: E402
@@ -54,29 +55,13 @@ CENTER_TOLERANCE = 4  # physical px
 
 def start_app(data_home: Path, dump: Path) -> subprocess.Popen[str]:
     base._mark_onboarded(data_home)
-    env = os.environ.copy()
-    env.update(
-        {
-            "XDG_DATA_HOME": str(data_home),
-            "XDG_CONFIG_HOME": str(data_home / "config"),
-            "GDK_BACKEND": "x11",
-            "NO_AT_BRIDGE": "1",
-            "LURKNOTES_APP_ID": (
-                f"dev.lurknotes.LurkNotes.allnotes-smoke.s{os.getpid()}"
-            ),
-            "LURKNOTES_TEST_DUMP": str(dump),
-            "LURKNOTES_TEST_OPEN_ALL": "1",
-            "LURKNOTES_TEST_PIN_DECK": "1",
-        }
+    env = h.make_env(
+        data_home,
+        h.app_id("allnotes-smoke"),
+        dump=dump,
+        extra={"LURKNOTES_TEST_PIN_DECK": "1"},
     )
-    return subprocess.Popen(
-        [str(ROOT / "lurknotes")],
-        cwd=str(ROOT),
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    return h.launch(["all"], env)
 
 
 def frame_extents(window: str) -> tuple[int, int, int, int]:

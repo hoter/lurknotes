@@ -9,7 +9,7 @@ is a drag. A drag never moves widgets mid-gesture: the tab is raised with CSS
 and the deck is only reordered when the button is released.
 
 The read-only peek is a fixed pane at the bottom of the fan: it is always
-allocated, so showing or hiding preview text never changes tab heights, tab
+allocated, so showing or hiding peek text never changes tab heights, tab
 positions, the header, or the wheel target. Tabs stay top-aligned.
 """
 
@@ -436,7 +436,7 @@ class FanPage(Gtk.Box):
         return rendered
 
     def _clear_peek_pane(self) -> None:
-        """Remove every preview line, keeping the fixed hint label."""
+        """Remove every peek row, keeping the fixed hint label."""
         child = self.peek_pane.get_first_child()
         while child is not None:
             following = child.get_next_sibling()

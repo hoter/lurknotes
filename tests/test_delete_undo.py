@@ -9,148 +9,11 @@ itself is covered by the live X11 smoke.
 
 from __future__ import annotations
 
-from typing import Callable
+from conftest import FakeScheduler, make_app, make_note
 
-from lurkn.app import (
-    STATE_FAN,
-    STATE_OPEN,
-    DeletedNote,
-    LurkNotesApp,
-    UndoController,
-)
-from lurkn.deck import DeckMachine
-from lurkn.events import DeckChanged
+from lurkn.app import STATE_FAN, STATE_OPEN
 from lurkn.notes import Note, discard_if_untouched
-
-
-class FakeScheduler:
-    """GLib.timeout_add/source_remove lookalike that honours cancellation."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[int, Callable[[], bool]]] = []
-        self.cancelled: list[int] = []
-        self._live: set[int] = set()
-
-    def __call__(self, delay: int, callback: Callable[[], bool]) -> int:
-        handle = len(self.calls) + 1
-        self.calls.append((delay, callback))
-        self._live.add(handle)
-        return handle
-
-    def cancel(self, handle: int) -> None:
-        self.cancelled.append(handle)
-        self._live.discard(handle)
-
-    def fire(self, handle: int) -> None:
-        if handle in self._live:
-            self._live.discard(handle)
-            self.calls[handle - 1][1]()
-
-
-class FakeNoteView:
-    def __init__(self) -> None:
-        self._text = ""
-
-    def text(self) -> str:
-        return self._text
-
-
-class FakePanel:
-    def __init__(self) -> None:
-        self.note = FakeNoteView()
-        self.toast_visible = False
-        self.toast_shows = 0
-        self.shown: list[tuple[str, object]] = []
-        self.save_failed: list[bool] = []
-
-    def show_toast(self) -> None:
-        self.toast_shows += 1
-        self.toast_visible = True
-
-    def hide_toast(self) -> None:
-        self.toast_visible = False
-
-    def set_visible(self, visible: bool) -> None:
-        self.visible = visible
-
-    def show_note(self, note: Note, notes) -> None:
-        self.shown.append(("note", note.id))
-
-    def show_fan(self, notes) -> None:
-        self.shown.append(("fan", len(notes)))
-
-    def refresh_notes(self, notes, active_id) -> None:
-        pass
-
-    def show_save_failed(self, failed: bool) -> None:
-        self.save_failed.append(failed)
-
-    def get_surface(self):
-        return None
-
-    def present(self) -> None:
-        pass
-
-    def focus_editor(self) -> None:
-        pass
-
-
-class FakeStore:
-    def __init__(self) -> None:
-        self.saved: list[list[str]] = []
-
-    def save(self, notes) -> None:
-        self.saved.append([note.id for note in notes])
-
-
-class NullRetrier:
-    def succeeded(self) -> None:
-        pass
-
-    def failed(self) -> None:
-        pass
-
-    def stop(self) -> None:
-        pass
-
-
-def make_note(note_id: str, text: str = "") -> Note:
-    return Note(id=note_id, text=text, created=1.0, updated=1.0)
-
-
-def make_app(
-    notes: list[Note],
-    *,
-    read_only: bool = False,
-    session_ids: set[str] | None = None,
-) -> tuple[LurkNotesApp, FakePanel, FakeStore, FakeScheduler]:
-    app = LurkNotesApp.__new__(LurkNotesApp)
-    app.notes = list(notes)
-    app.session_ids = set(session_ids or ())
-    app.current_id = None
-    # Ticket 04 moved deck state into the pure machine; these tests drive the
-    # app methods directly, so a machine without timers is enough.
-    app.deck = DeckMachine(lambda _delay, _callback: 0, lambda _handle: None)
-    app.deck.state = STATE_FAN
-    app.save_source = 0
-    app.unsaved = False
-    app.read_only = read_only
-    app.overwrite_blocked = False
-    app.panel = FakePanel()
-    app.store = FakeStore()
-    app.x11 = None
-    app._test_dump_path = None
-    app._test_type = None
-    app.deck_changed_event = DeckChanged()
-    app._retrier = NullRetrier()
-    scheduler = FakeScheduler()
-    app._undo = UndoController(
-        timeout_ms=10_000,
-        schedule=scheduler,
-        cancel=scheduler.cancel,
-        on_expire=app._on_undo_expired,
-    )
-    return app, app.panel, app.store, scheduler
+from lurkn.undo import DeletedNote, UndoController
 
 
 # -- the one pending undo slot -------------------------------------------
@@ -234,7 +97,10 @@ def test_delete_writes_immediately_and_opens_the_next_note():
         make_note("second", "two"),
         make_note("third", "three"),
     )
-    app, panel, store, scheduler = make_app([first, second, third])
+    app = make_app([first, second, third])
+    panel = app.panel
+    store = app.store
+    scheduler = app.scheduler
     app.open_note(second.id)
 
     assert app.delete_current() is True
@@ -252,7 +118,8 @@ def test_delete_writes_immediately_and_opens_the_next_note():
 
 def test_delete_flushes_unsaved_typing_into_the_undo_payload():
     first, second = make_note("first", "one"), make_note("second", "two")
-    app, panel, _store, _scheduler = make_app([first, second])
+    app = make_app([first, second])
+    panel = app.panel
     app.open_note(first.id)
     panel.note._text = "one edited"
 
@@ -264,7 +131,10 @@ def test_delete_flushes_unsaved_typing_into_the_undo_payload():
 
 def test_deleting_the_last_note_shows_the_empty_fan_and_undo_restores_it():
     only = make_note("only", "last")
-    app, panel, store, scheduler = make_app([only])
+    app = make_app([only])
+    panel = app.panel
+    store = app.store
+    scheduler = app.scheduler
     app.open_note(only.id)
 
     assert app.delete_current() is True
@@ -289,7 +159,10 @@ def test_deleting_the_last_note_shows_the_empty_fan_and_undo_restores_it():
 
 
 def test_delete_without_an_open_note_does_nothing():
-    app, panel, store, scheduler = make_app([make_note("a")])
+    app = make_app([make_note("a")])
+    panel = app.panel
+    store = app.store
+    scheduler = app.scheduler
 
     assert app.delete_current() is False
 
@@ -307,7 +180,9 @@ def test_undo_restores_the_note_at_its_original_index_and_reopens_it():
         make_note("second"),
         make_note("third"),
     )
-    app, panel, store, _scheduler = make_app([first, second, third])
+    app = make_app([first, second, third])
+    panel = app.panel
+    store = app.store
     app.open_note(second.id)
     app.delete_current()
     assert [note.id for note in app.notes] == ["first", "third"]
@@ -326,7 +201,7 @@ def test_undo_restores_the_note_at_its_original_index_and_reopens_it():
 def test_undo_keeps_the_note_untouched_and_in_the_session():
     session_note = Note.create()
     other = make_note("other")
-    app, _panel, _store, _scheduler = make_app(
+    app = make_app(
         [session_note, other], session_ids={session_note.id}
     )
     app.open_note(session_note.id)
@@ -345,7 +220,10 @@ def test_undo_keeps_the_note_untouched_and_in_the_session():
 
 def test_expiry_finalises_the_delete_and_drops_the_payload():
     first, second = make_note("first"), make_note("second")
-    app, panel, store, scheduler = make_app([first, second])
+    app = make_app([first, second])
+    panel = app.panel
+    store = app.store
+    scheduler = app.scheduler
     app.open_note(first.id)
     app.delete_current()
     saved_before = list(store.saved)
@@ -361,7 +239,9 @@ def test_expiry_finalises_the_delete_and_drops_the_payload():
 
 def test_second_delete_finalises_the_first_and_only_restores_the_second():
     first, second, third = make_note("first"), make_note("second"), make_note("third")
-    app, panel, _store, scheduler = make_app([first, second, third])
+    app = make_app([first, second, third])
+    panel = app.panel
+    scheduler = app.scheduler
     app.open_note(second.id)
 
     app.delete_current()
@@ -387,7 +267,9 @@ def test_second_delete_finalises_the_first_and_only_restores_the_second():
 
 def test_read_only_delete_and_undo_stay_in_memory_and_never_write():
     first, second = make_note("first"), make_note("second")
-    app, panel, store, _scheduler = make_app([first, second], read_only=True)
+    app = make_app([first, second], read_only=True)
+    panel = app.panel
+    store = app.store
     app.open_note(first.id)
 
     assert app.delete_current() is True

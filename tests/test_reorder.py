@@ -10,10 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lurkn.app import STATE_FAN, LurkNotesApp
-from lurkn.deck import DeckMachine
-from lurkn.events import DeckChanged
-from lurkn.notes import Note
+from conftest import make_app, make_note
+
 from lurkn.reorder import (
     CANCEL,
     CLICK,
@@ -147,81 +145,15 @@ def test_an_unchanged_target_is_reported_and_the_app_keeps_it_a_no_op() -> None:
 # -- app: reorder, save, read-only, no-op -------------------------------
 
 
-class FakePanel:
-    def __init__(self) -> None:
-        self.refreshed: list[tuple[list[str], str | None]] = []
-        self.save_failed: list[bool] = []
-
-    def refresh_notes(self, notes, active_id) -> None:
-        self.refreshed.append(([note.id for note in notes], active_id))
-
-    def show_fan(self, notes) -> None:
-        self.refreshed.append(([note.id for note in notes], None))
-
-    def show_save_failed(self, failed: bool) -> None:
-        self.save_failed.append(failed)
-
-    def get_surface(self):
-        return None
-
-
-class FakeStore:
-    def __init__(self) -> None:
-        self.saved: list[list[str]] = []
-
-    def save(self, notes) -> None:
-        self.saved.append([note.id for note in notes])
-
-
-class NullRetrier:
-    def succeeded(self) -> None:
-        pass
-
-    def failed(self) -> None:
-        pass
-
-    def stop(self) -> None:
-        pass
-
-
-def make_note(note_id: str, text: str = "") -> Note:
-    return Note(id=note_id, text=text, created=1.0, updated=1.0)
-
-
-def make_app(
-    notes: list[Note],
-    *,
-    read_only: bool = False,
-    overwrite_blocked: bool = False,
-    store=None,
-) -> tuple[LurkNotesApp, FakePanel, FakeStore]:
-    app = LurkNotesApp.__new__(LurkNotesApp)
-    app.notes = list(notes)
-    app.session_ids = set()
-    app.current_id = None
-    app.deck = DeckMachine(lambda _delay, _callback: 0, lambda _handle: None)
-    app.deck.state = STATE_FAN
-    app.save_source = 0
-    app.unsaved = False
-    app.read_only = read_only
-    app.overwrite_blocked = overwrite_blocked
-    app.panel = FakePanel()
-    app.store = store or FakeStore()
-    app.x11 = None
-    app._test_dump_path = None
-    app._test_type = None
-    app.deck_changed_event = DeckChanged()
-    app._retrier = NullRetrier()
-    return app, app.panel, app.store
-
-
 def test_reordering_moves_the_note_to_the_target_and_saves_it_once() -> None:
     first, second, third = (
         make_note("first"),
         make_note("second"),
         make_note("third"),
     )
-    app, panel, store = make_app([first, second, third])
+    app = make_app([first, second, third])
+    panel = app.panel
+    store = app.store
     notified: list[bool] = []
     app.deck_changed_event.subscribe(lambda: notified.append(True))
 
@@ -235,9 +167,11 @@ def test_reordering_moves_the_note_to_the_target_and_saves_it_once() -> None:
 
 
 def test_reordering_to_the_same_index_is_a_no_op() -> None:
-    app, panel, store = make_app(
+    app = make_app(
         [make_note("first"), make_note("second"), make_note("third")]
     )
+    panel = app.panel
+    store = app.store
 
     assert app.reorder_note("second", 1) is False
 
@@ -247,14 +181,15 @@ def test_reordering_to_the_same_index_is_a_no_op() -> None:
 
 
 def test_an_unknown_note_is_ignored() -> None:
-    app, _panel, store = make_app([make_note("first")])
+    app = make_app([make_note("first")])
+    store = app.store
 
     assert app.reorder_note("missing", 0) is False
     assert store.saved == []
 
 
 def test_the_target_is_clamped_to_the_deck() -> None:
-    app, _panel, _store = make_app(
+    app = make_app(
         [make_note("first"), make_note("second"), make_note("third")]
     )
 
@@ -266,9 +201,11 @@ def test_the_target_is_clamped_to_the_deck() -> None:
 
 
 def test_a_read_only_deck_reorders_in_memory_without_writing() -> None:
-    app, panel, store = make_app(
+    app = make_app(
         [make_note("first"), make_note("second")], read_only=True
     )
+    panel = app.panel
+    store = app.store
 
     assert app.reorder_note("first", 1) is True
 
@@ -279,9 +216,10 @@ def test_a_read_only_deck_reorders_in_memory_without_writing() -> None:
 
 
 def test_an_unconfirmed_corrupt_deck_reorders_in_memory_without_writing() -> None:
-    app, _panel, store = make_app(
+    app = make_app(
         [make_note("first"), make_note("second")], overwrite_blocked=True
     )
+    store = app.store
 
     assert app.reorder_note("first", 1) is True
 
@@ -295,7 +233,7 @@ def test_reorder_persists_through_the_real_store(tmp_path: Path) -> None:
     Store(path).save(notes)
     store = Store(path)
     loaded = store.load().notes
-    app, _panel, _store = make_app(loaded, store=store)
+    app = make_app(loaded, store=store)
 
     assert app.reorder_note("first", 1) is True
 

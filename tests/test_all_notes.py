@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import time
 
-from lurkn.all_notes import (
+from conftest import make_note
+
+from lurkn.search import (
     SNIPPET_LIMIT,
     AllNotesModel,
     format_updated,
@@ -17,17 +19,6 @@ from lurkn.all_notes import (
     search_notes,
 )
 from lurkn.events import DeckChanged
-from lurkn.notes import Note
-
-
-def make_note(
-    note_id: str,
-    text: str,
-    *,
-    created: float = 1.0,
-    updated: float = 2.0,
-) -> Note:
-    return Note(id=note_id, text=text, created=created, updated=updated)
 
 
 def ids(hits) -> list[str]:

@@ -19,7 +19,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+import harness as h  # noqa: E402
+
 from lurkn.strings import STRIP_TITLE  # noqa: E402
+
+SmokeFailure = h.SmokeFailure
 
 STRIP_LOGICAL_WIDTH = 10  # spec §6, independent of the app's constant
 REQUIRED_STATES = {
@@ -32,40 +36,9 @@ STARTUP_TIMEOUT = 10.0
 SETTLE_TIMEOUT = 5.0
 
 
-class SmokeFailure(Exception):
-    pass
-
-
-def _run(*command: str) -> str:
-    result = subprocess.run(command, text=True, capture_output=True, check=False)
-    if result.returncode != 0:
-        raise SmokeFailure(
-            f"{' '.join(command)} failed ({result.returncode}): {result.stderr.strip()}"
-        )
-    return result.stdout
-
-
-def _effective_scale() -> float:
-    """The surface scale GDK will use: GDK_SCALE override, else Xft.dpi."""
-    override = os.environ.get("GDK_SCALE")
-    if override:
-        return float(override)
-    output = _run("xrdb", "-query")
-    match = re.search(r"Xft\.dpi:\s*([0-9.]+)", output)
-    if match is None:
-        return 1.0
-    return float(match.group(1)) / 96.0
-
-
-def _workarea() -> tuple[int, int, int, int]:
-    output = _run("xprop", "-root", "_NET_WORKAREA")
-    match = re.search(r"_NET_WORKAREA\(CARDINAL\)\s*=\s*(.+)", output)
-    if match is None:
-        raise SmokeFailure("root window has no _NET_WORKAREA; cannot check geometry")
-    values = [int(value) for value in re.findall(r"\d+", match.group(1))]
-    if len(values) < 4:
-        raise SmokeFailure(f"unexpected _NET_WORKAREA: {output.strip()}")
-    return values[0], values[1], values[2], values[3]
+_run = h.run
+_effective_scale = h.effective_scale
+_workarea = h.workarea
 
 
 def _strip_windows(pid: int | None = None) -> list[str]:
@@ -158,56 +131,9 @@ def _check_no_focus_hints(properties: str) -> None:
         raise SmokeFailure("_NET_WM_USER_TIME is not 0; mapping may activate the strip")
 
 
-def _ensure_running(process: subprocess.Popen[str]) -> None:
-    if process.poll() is None:
-        return
-    stdout, stderr = process.communicate(timeout=5)
-    raise SmokeFailure(
-        f"app exited with {process.returncode} while the strip was checked; "
-        "another LurkNotes instance may already be running\n"
-        f"stdout: {stdout[-2000:]}\nstderr: {stderr[-2000:]}"
-    )
-
-
-def _stop(process: subprocess.Popen[str]) -> None:
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
-
-
-def _assert_app_id_free(app_id: str) -> None:
-    """A same-id instance would receive this launch and exit 0 (PLATFORM §10).
-
-    Only *our* id matters: another worktree's LurkNotes has a different id and
-    may legitimately be on screen while this smoke runs.
-    """
-    result = subprocess.run(
-        [
-            "gdbus",
-            "call",
-            "--session",
-            "--dest",
-            "org.freedesktop.DBus",
-            "--object-path",
-            "/org/freedesktop/DBus",
-            "--method",
-            "org.freedesktop.DBus.NameHasOwner",
-            app_id,
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        # No gdbus or no session bus; the spawn below would fail visibly.
-        return
-    if "true" in result.stdout.lower():
-        raise SmokeFailure(f"another LurkNotes instance owns {app_id}; retry")
+_ensure_running = h.ensure_running
+_stop = h.stop
+_assert_app_id_free = h.assert_app_id_free
 
 
 def main() -> int:
@@ -217,27 +143,16 @@ def main() -> int:
         # process with the same id would hand the launch to the existing one
         # and exit, so the smoke test uses its own id and checks that the
         # window belongs to the process it spawned (_NET_WM_PID).
-        app_id = f"dev.lurknotes.LurkNotes.smoke.s{os.getpid()}"
+        app_id = h.app_id("smoke")
         _assert_app_id_free(app_id)
 
         with tempfile.TemporaryDirectory(prefix="lurknotes-smoke-") as data_home:
             # Returning user: ticket 09's onboarding banner is covered by its
             # own smoke against a fresh data dir.
-            marker = Path(data_home) / "lurknotes" / "onboarded"
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text("onboarded\n", encoding="utf-8")
-            env = os.environ.copy()
-            env["XDG_DATA_HOME"] = data_home
-            env["NO_AT_BRIDGE"] = "1"
-            env["LURKNOTES_APP_ID"] = app_id
-            app = subprocess.Popen(
-                [str(ROOT / "lurknotes")],
-                cwd=str(ROOT),
-                env=env,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            data_home = Path(data_home)
+            h.mark_onboarded(data_home)
+            env = h.make_env(data_home, app_id)
+            app = h.launch([], env)
             deadline = time.monotonic() + STARTUP_TIMEOUT
             windows: list[str] = []
             while time.monotonic() < deadline:

@@ -10,6 +10,12 @@ follows spec §5.3:
 * corrupt main + unusable backup -> empty deck and an overwrite gate: nothing
   touches the original file until the user explicitly confirms;
 * a future ``version`` -> read-only mode; ``save`` refuses to write at all.
+
+A missing ``notes.json`` is only restored from the backup when a
+``notes.recovering`` marker exists. That marker is written before a recovery
+quarantines the corrupt main and is cleared after the recovered deck is
+persisted. Without it a missing main is a first run (or a user deleting the
+file) and the deck is empty, not an older backup resurrected by accident.
 """
 
 from __future__ import annotations
@@ -87,6 +93,9 @@ class Store:
         self.backup_tmp_path = self.path.with_name(
             self.path.stem + ".bak.json.tmp"
         )
+        self.recovery_marker_path = self.path.with_name(
+            self.path.stem + ".recovering"
+        )
         self.last_save_error: Exception | None = None
         self.last_quarantine_path: Path | None = None
         self._read_only = False
@@ -152,10 +161,17 @@ class Store:
         return LoadResult(notes)
 
     def _load_when_main_is_missing(self) -> LoadResult:
-        # First run, or a crash between quarantining a corrupt file and
-        # writing the recovered deck. A valid backup is always worth keeping.
+        # A missing main is an empty deck unless a recovery was interrupted:
+        # only then is the backup the deck the user last saw. The marker keeps
+        # a deliberately deleted notes.json from resurrecting stale notes.
+        if not self.recovery_marker_path.exists():
+            return LoadResult([])
+
         backup = self._load_backup()
         if backup is None:
+            # Nothing usable to recover from: start empty and forget the
+            # interrupted recovery instead of retrying it on every launch.
+            self._clear_recovery_marker()
             return LoadResult([])
         try:
             self.save(backup)
@@ -187,6 +203,11 @@ class Store:
                 overwrite_blocked=True,
             )
 
+        # The marker makes the crash window recoverable: if the process dies
+        # after the corrupt main was quarantined but before the replacement
+        # landed, the next load sees a missing main with this marker and may
+        # restore the backup. A successful save clears it.
+        self._write_recovery_marker()
         self._preserve_before_save = True
         try:
             self.save(backup)
@@ -204,6 +225,26 @@ class Store:
             detail=str(corruption),
             corrupt_path=self.last_quarantine_path,
         )
+
+    def _write_recovery_marker(self) -> None:
+        """Best effort: mark an in-progress recovery before touching files."""
+        try:
+            self.recovery_marker_path.parent.mkdir(parents=True, exist_ok=True)
+            self.recovery_marker_path.write_text(
+                "recovering\n", encoding="utf-8"
+            )
+        except OSError:
+            # The save below will surface an unusable directory; recovery in
+            # memory is still better than dropping the backup deck.
+            pass
+
+    def _clear_recovery_marker(self) -> None:
+        try:
+            self.recovery_marker_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
 
     def _load_backup(self) -> list[Note] | None:
         """The backup deck, or None when it is absent or unusable."""
@@ -318,6 +359,9 @@ class Store:
             os.replace(self.tmp_path, self.path)
             self._fsync_directory()
             self.last_save_error = None
+            # A successful persist completes an interrupted recovery; the
+            # marker must not trigger a backup restore on a later launch.
+            self._clear_recovery_marker()
         except BaseException:
             # Ordinary failures must not leave a half-written temp file to
             # confuse the next save. The old main and backup stay untouched.

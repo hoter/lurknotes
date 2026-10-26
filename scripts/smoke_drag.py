@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
+import harness as h  # noqa: E402
 import smoke_note as base  # noqa: E402
 from lurkn.strings import (  # noqa: E402
     ALL_NOTES_TITLE,
@@ -61,38 +62,35 @@ BODY_BY_ID = dict(zip(NOTE_IDS, BODIES))
 def start_app(
     data_home: Path,
     dump: Path,
-    *,
-    open_all: bool = False,
 ) -> subprocess.Popen[str]:
     global RUN
     RUN += 1
-    app_id = f"dev.lurknotes.LurkNotes.dragSmoke.s{os.getpid()}.r{RUN}"
+    app_id = h.app_id(f"dragSmoke.r{RUN}")
     base._assert_app_id_free(app_id)
     base._mark_onboarded(data_home)
-    env = os.environ.copy()
-    env.update(
-        {
-            "XDG_DATA_HOME": str(data_home),
-            "XDG_CONFIG_HOME": str(data_home / "config"),
-            "GDK_BACKEND": "x11",
-            "NO_AT_BRIDGE": "1",
-            "LURKNOTES_APP_ID": app_id,
-            "LURKNOTES_TEST_DUMP": str(dump),
-            "LURKNOTES_TEST_CONTROL": "1",
-        }
+    env = h.make_env(
+        data_home,
+        app_id,
+        dump=dump,
+        extra={"LURKNOTES_TEST_CONTROL": "1"},
     )
-    if open_all:
-        env["LURKNOTES_TEST_OPEN_ALL"] = "1"
-    process = subprocess.Popen(
-        [str(ROOT / "lurknotes"), "--autostart"],
+    return h.launch(["--autostart"], env)
+
+
+def open_all_via_command(app: subprocess.Popen[str]) -> None:
+    """Open All Notes through the real single-instance ``all`` command."""
+    result = subprocess.run(
+        [str(ROOT / "lurknotes"), "all"],
         cwd=str(ROOT),
-        env=env,
+        env=app.lurk_env,  # type: ignore[attr-defined]
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
+        check=False,
     )
-    process.lurk_app_id = app_id  # type: ignore[attr-defined]
-    return process
+    if result.returncode != 0:
+        raise SmokeFailure(
+            f"lurknotes all failed ({result.returncode}): {result.stderr.strip()}"
+        )
 
 
 def seed_notes(data_home: Path) -> Path:
@@ -714,9 +712,10 @@ def scenario_restart_and_all_notes(
     expected: list[str],
     expected_titles: list[str],
 ) -> None:
-    app = start_app(data_home, dump, open_all=True)
+    app = start_app(data_home, dump)
     try:
         base._wait_for_window(STRIP_TITLE, app)
+        open_all_via_command(app)
         restarted = snapshot(
             dump,
             app,
@@ -778,11 +777,13 @@ def main() -> int:
             notes_path = seed_notes(data_home)
             dump = data_home / "dump.json"
 
-            app = start_app(data_home, dump, open_all=True)
+            app = start_app(data_home, dump)
             base._wait_for_window(STRIP_TITLE, app)
             snapshot(dump, app, lambda snap: snap.get("state") == "strip", timeout=4.0)
-            # All Notes is open from the start so the live deck_changed() call
-            # after a reorder can be checked without a reopen.
+            # All Notes is opened by the real command, not a test hook, so the
+            # live deck_changed() call after a reorder can be checked without
+            # a reopen.
+            open_all_via_command(app)
             snapshot(
                 dump,
                 app,
