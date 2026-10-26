@@ -330,11 +330,12 @@ def _start_app(data_home: Path, dump: Path, type_text: str | None) -> subprocess
             "NO_AT_BRIDGE": "1",
             "LURKNOTES_APP_ID": _app_id(),
             "LURKNOTES_TEST_DUMP": str(dump),
+            "LURKNOTES_TEST_CONTROL": "1",
         }
     )
     if type_text is not None:
         env["LURKNOTES_TEST_TYPE"] = type_text
-    return subprocess.Popen(
+    process = subprocess.Popen(
         [str(ROOT / "lurknotes")],
         cwd=str(ROOT),
         env=env,
@@ -342,6 +343,8 @@ def _start_app(data_home: Path, dump: Path, type_text: str | None) -> subprocess
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    process.lurk_app_id = env["LURKNOTES_APP_ID"]  # type: ignore[attr-defined]
+    return process
 
 
 def _ensure_running(process: subprocess.Popen[str]) -> None:
@@ -394,6 +397,101 @@ def _wait_for_window(
             return windows[0]
         time.sleep(0.05)
     raise SmokeFailure(f"no window titled {title!r} appeared within {timeout:.0f}s")
+
+
+def _wait_fan_viewable(
+    process: subprocess.Popen[str], timeout: float = SETTLE_TIMEOUT
+) -> str:
+    """Wait for *our* fan window to be mapped, not merely created.
+
+    Since ticket 04 the panel window exists from startup but stays unmapped in
+    the strip state; ``xwininfo -tree`` lists it either way.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        _ensure_running(process)
+        for window in _windows_titled(FAN_TITLE, process.pid):
+            info = _window_info(window)
+            if info.get("map_state") == "IsViewable":
+                return window
+        time.sleep(0.05)
+    raise SmokeFailure(f"the fan did not map within {timeout:.0f}s")
+
+
+def _away_point() -> tuple[int, int]:
+    """A point on the desktop well left of the deck."""
+    x, y, _width, _height = _workarea()
+    scale = _effective_scale()
+    return x + round(120 * scale), y + round(120 * scale)
+
+
+def _strip_point() -> tuple[int, int]:
+    x, y, width, _height = _workarea()
+    scale = _effective_scale()
+    return x + width - round(5 * scale), y + round(200 * scale)
+
+
+def _control(process: subprocess.Popen[str], command: str) -> bool:
+    """Drive a deck interaction when another agent's window owns the edge.
+
+    Only available when LURKNOTES_TEST_CONTROL is set; calls the same handlers
+    as pointer and button events, so the smoke can still verify the deck under
+    a concurrent ABOVE window.
+    """
+    app_id = getattr(process, "lurk_app_id", None)
+    if app_id is None:
+        return False
+    path = "/" + app_id.replace(".", "/")
+    result = subprocess.run(
+        [
+            "gdbus",
+            "call",
+            "--session",
+            "--dest",
+            app_id,
+            "--object-path",
+            path,
+            "--method",
+            "org.gtk.Actions.Activate",
+            "control",
+            f'[<"{command}">]',
+            "{}",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        print(f"smoke-note: control {command!r} failed: {result.stderr.strip()}")
+        return False
+    return True
+
+
+def _show_fan(xtest: "XTest", process: subprocess.Popen[str]) -> str:
+    """Hover the strip like a user and return the mapped fan window.
+
+    A real XTest pointer move is used instead of any test hook: this is the
+    exact path spec §3 describes, including the 120 ms delay and the no-focus
+    map. Moving away first matters when the pointer is still parked on the
+    strip from an earlier step: XTest would send no new enter event.
+    """
+    strip = _wait_for_window(STRIP_TITLE, process)
+    away_x, away_y = _away_point()
+    xtest.move(away_x, away_y)
+    time.sleep(0.05)
+    x, y = _strip_point()
+    try:
+        _raise_until_top(xtest, strip, x, y, "the strip")
+    except SmokeFailure as exc:
+        print(f"smoke-note: could not raise the strip ({exc}); retrying")
+    xtest.move(x, y)
+    try:
+        return _wait_fan_viewable(process)
+    except SmokeFailure:
+        print("smoke-note: strip hover was blocked; using the control channel")
+        if not _control(process, "strip"):
+            raise
+        return _wait_fan_viewable(process)
 
 
 def _wait_dump(
@@ -536,6 +634,15 @@ class XTest:
         self.xtst.XTestFakeMotionEvent(self.display, -1, x, y, 0)
         self.xlib.XFlush(self.display)
         time.sleep(0.05)
+
+    def wheel(self, notches: int, *, up: bool = False) -> None:
+        """Turn the wheel over the pointer: X buttons 4 (up) and 5 (down)."""
+        button = 4 if up else 5
+        for _ in range(abs(notches)):
+            self.xtst.XTestFakeButtonEvent(self.display, button, 1, 0)
+            self.xtst.XTestFakeButtonEvent(self.display, button, 0, 0)
+            self.xlib.XFlush(self.display)
+            time.sleep(0.05)
 
     def top_window_at_pointer(self) -> int | None:
         """The root child under the pointer, i.e. the window a click hits."""
@@ -1039,8 +1146,8 @@ def main() -> int:
             dump = data_home / "dump.json"
             app = _start_app(data_home, dump, typed)
             _wait_for_window(STRIP_TITLE, app)
-            fan = _wait_for_window(FAN_TITLE, app)
             xtest = XTest()
+            fan = _show_fan(xtest, app)
             _raise_for_capture(xtest, fan, "the fan")
             _check_fan(fan)
 
@@ -1122,7 +1229,7 @@ def main() -> int:
             restart_dump = data_home / "restart-dump.json"
             close_typed = "\nClosed before debounce"
             app = _start_app(data_home, restart_dump, close_typed)
-            fan = _wait_for_window(FAN_TITLE, app)
+            fan = _show_fan(xtest, app)
             restart_fan = _wait_dump(
                 restart_dump,
                 app,
@@ -1325,6 +1432,7 @@ def main() -> int:
             final_dump = data_home / "final-dump.json"
             app = _start_app(data_home, final_dump, None)
             _wait_for_window(STRIP_TITLE, app)
+            _show_fan(xtest, app)
             final_fan = _wait_dump(
                 final_dump,
                 app,
@@ -1353,6 +1461,7 @@ def main() -> int:
             empty_dump = data_home / "empty-dump.json"
             app = _start_app(empty_home, empty_dump, None)
             _wait_for_window(STRIP_TITLE, app)
+            empty_fan_window = _show_fan(xtest, app)
             empty_fan = _wait_dump(
                 empty_dump,
                 app,
@@ -1364,7 +1473,7 @@ def main() -> int:
                 raise SmokeFailure("an empty deck showed tabs")
             _click_center(
                 xtest,
-                _wait_for_window(FAN_TITLE, app),
+                empty_fan_window,
                 empty_fan["new_button_center"],
                 "+ on the empty deck",
             )
@@ -1399,6 +1508,7 @@ def main() -> int:
             quit_dump = data_home / "shutdown-flush-dump.json"
             app = _start_app(empty_home, quit_dump, quit_text)
             _wait_for_window(STRIP_TITLE, app)
+            quit_fan_window = _show_fan(xtest, app)
             quit_fan = _wait_dump(
                 quit_dump,
                 app,
@@ -1408,7 +1518,7 @@ def main() -> int:
             )
             _click_center(
                 xtest,
-                _wait_for_window(FAN_TITLE, app),
+                quit_fan_window,
                 quit_fan["new_button_center"],
                 "+ before quitting with unsaved text",
             )
@@ -1437,6 +1547,7 @@ def main() -> int:
             discard_dump = data_home / "shutdown-discard-dump.json"
             app = _start_app(empty_home, discard_dump, None)
             _wait_for_window(STRIP_TITLE, app)
+            discard_fan_window = _show_fan(xtest, app)
             discard_fan = _wait_dump(
                 discard_dump,
                 app,
@@ -1446,7 +1557,7 @@ def main() -> int:
             )
             _click_center(
                 xtest,
-                _wait_for_window(FAN_TITLE, app),
+                discard_fan_window,
                 discard_fan["new_button_center"],
                 "+ before quitting untouched",
             )
@@ -1477,6 +1588,7 @@ def main() -> int:
             ctrlq_dump = data_home / "shutdown-ctrlq-dump.json"
             app = _start_app(empty_home, ctrlq_dump, None)
             _wait_for_window(STRIP_TITLE, app)
+            ctrlq_fan_window = _show_fan(xtest, app)
             ctrlq_fan = _wait_dump(
                 ctrlq_dump,
                 app,
@@ -1484,7 +1596,7 @@ def main() -> int:
                 and snapshot.get("tab_centers"),
             )
             _click_first_tab(
-                xtest, _wait_for_window(FAN_TITLE, app), ctrlq_fan
+                xtest, ctrlq_fan_window, ctrlq_fan
             )
             ctrlq_note = _wait_for_window(NOTE_TITLE, app)
             _wait_dump(
@@ -1515,6 +1627,7 @@ def main() -> int:
             restart_dump_final = data_home / "shutdown-restart-dump.json"
             app = _start_app(empty_home, restart_dump_final, None)
             _wait_for_window(STRIP_TITLE, app)
+            _show_fan(xtest, app)
             after_quit = _wait_dump(
                 restart_dump_final,
                 app,
