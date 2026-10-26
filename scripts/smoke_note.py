@@ -335,7 +335,7 @@ def _check_dark(window: str, *, rail: bool = False) -> None:
 
 
 def _app_id() -> str:
-    return f"dev.lurknotes.LurkNotes.note-smoke.s{os.getpid()}"
+    return f"dev.lurknotes.LurkNotes.noteSmoke.s{os.getpid()}"
 
 
 def _start_app(data_home: Path, dump: Path, type_text: str | None) -> subprocess.Popen[str]:
@@ -1034,11 +1034,16 @@ def _click_until_note_open(
     process: subprocess.Popen[str],
     panel: str,
     snapshot: dict,
-    attempts: int = 3,
+    attempts: int = 6,
 ) -> str:
     """One real click should open the note; retry for X server hiccups."""
     for attempt in range(1, attempts + 1):
-        _click_first_tab(xtest, panel, snapshot)
+        try:
+            _click_first_tab(xtest, panel, snapshot)
+        except SmokeFailure as exc:
+            print(f"smoke-note: click attempt {attempt} was blocked ({exc})")
+            time.sleep(0.5)
+            continue
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             _ensure_running(process)
@@ -1074,6 +1079,8 @@ def _close_note_with_escape(
         if click_first or attempt > 1:
             _click_editor(xtest, note_window)
             time.sleep(0.1)
+        # A concurrent test can steal focus between the click and the key.
+        xtest.focus(note_window)
         xtest.press_escape()
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:

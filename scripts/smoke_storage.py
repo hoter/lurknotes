@@ -51,7 +51,7 @@ def start_app(
             "GDK_BACKEND": "x11",
             "NO_AT_BRIDGE": "1",
             "LURKNOTES_APP_ID": (
-                f"dev.lurknotes.LurkNotes.storage-smoke.s{os.getpid()}.{RUN}"
+                f"dev.lurknotes.LurkNotes.storageSmoke.s{os.getpid()}.r{RUN}"
             ),
             "LURKNOTES_TEST_DUMP": str(dump),
             "LURKNOTES_TEST_CONTROL": "1",
