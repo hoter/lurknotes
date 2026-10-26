@@ -276,6 +276,38 @@ def test_corrupt_main_recovers_from_backup_quarantines_it_and_persists(tmp_path)
     assert len(corrupt_files(tmp_path)) == 1
 
 
+def test_a_second_corruption_in_the_same_second_gets_a_unique_name(
+    tmp_path, monkeypatch
+):
+    """Two quarantine moves must not overwrite each other (spec §5.3)."""
+    import lurkn.store as store_module
+
+    monkeypatch.setattr(
+        store_module.time, "strftime", lambda *_args: "20260101T000000"
+    )
+    path = tmp_path / "notes.json"
+    backup = tmp_path / "notes.bak.json"
+    write_json(backup, payload(note("a", "from backup")))
+
+    path.write_text("{first corruption", encoding="utf-8")
+    first = Store(path).load()
+    assert first.corrupt_path == tmp_path / "notes.corrupt-20260101T000000.json"
+    assert first.corrupt_path.read_text(encoding="utf-8") == "{first corruption"
+
+    path.write_text("{second corruption", encoding="utf-8")
+    second = Store(path).load()
+    assert (
+        second.corrupt_path == tmp_path / "notes.corrupt-20260101T000000-1.json"
+    )
+    assert second.corrupt_path.read_text(encoding="utf-8") == "{second corruption"
+
+    assert [item.read_text(encoding="utf-8") for item in (
+        tmp_path / "notes.corrupt-20260101T000000.json",
+        tmp_path / "notes.corrupt-20260101T000000-1.json",
+    )] == ["{first corruption", "{second corruption"]
+    assert read_json(path) == payload(note("a", "from backup"))
+
+
 @pytest.mark.parametrize(
     "main_text",
     [
