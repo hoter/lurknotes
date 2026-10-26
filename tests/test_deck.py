@@ -257,6 +257,25 @@ def test_collapsing_cancels_a_pending_peek() -> None:
     assert deck.state == STATE_STRIP
 
 
+def test_a_pinned_leave_hides_the_peek_but_keeps_the_fan() -> None:
+    clock = FakeClock()
+    deck = machine(clock)
+    deck.hover_enter()
+    clock.advance(FAN_DELAY_MS)
+    deck.hover_tab("note-a")
+    clock.advance(PEEK_DELAY_MS)
+
+    deck.hover_leave(allow_collapse=False)
+    clock.advance(COLLAPSE_DELAY_MS * 4)
+
+    assert deck.state == STATE_FAN
+    assert deck.peek_id is None
+
+    deck.hover_leave()
+    clock.advance(COLLAPSE_DELAY_MS)
+    assert deck.state == STATE_STRIP
+
+
 def test_an_open_note_never_collapses_on_pointer_leave() -> None:
     clock = FakeClock()
     deck = machine(clock)

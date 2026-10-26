@@ -93,8 +93,13 @@ class DeckMachine:
             )
         # Already ``fan``/``open``: entering only cancels a pending collapse.
 
-    def hover_leave(self) -> None:
-        """The pointer left the deck entirely."""
+    def hover_leave(self, *, allow_collapse: bool = True) -> None:
+        """The pointer left the deck entirely.
+
+        ``allow_collapse=False`` still hides a peek and cancels a pending
+        expansion, but keeps the fan mapped. Ticket 05 uses it while the undo
+        toast is live: unmapping the panel would hide the Undo button.
+        """
         if self.state == STATE_STRIP:
             self._cancel_expand()
             return
@@ -102,6 +107,8 @@ class DeckMachine:
             # Spec §3: an open note never collapses by itself.
             return
         self._clear_peek()
+        if not allow_collapse:
+            return
         if self._collapse_timer is None:
             self._collapse_timer = self._schedule(
                 self._collapse_delay_ms, self._collapse_timer_fired
