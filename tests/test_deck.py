@@ -367,6 +367,72 @@ def test_collapse_notifies_the_panel_callbacks_once() -> None:
     assert events == ["shown", "hidden", "shown"]
 
 
+def test_starting_a_drag_hides_the_peek_and_cancels_a_pending_collapse() -> None:
+    clock = FakeClock()
+    seen: list[str | None] = []
+    deck = machine(clock, on_unpeek=lambda: seen.append(None))
+    deck.hover_enter()
+    clock.advance(FAN_DELAY_MS)
+    deck.hover_tab("note-a")
+    clock.advance(PEEK_DELAY_MS)
+    assert deck.peek_id == "note-a"
+
+    deck.hover_leave()
+    assert deck.state == STATE_FAN
+    deck.drag_begin()
+
+    assert deck.dragging is True
+    assert deck.peek_id is None
+    assert seen == [None]
+    clock.advance(COLLAPSE_DELAY_MS * 4)
+    assert deck.state == STATE_FAN
+
+
+def test_leaving_the_deck_mid_drag_never_collapses_it() -> None:
+    clock = FakeClock()
+    deck = machine(clock)
+    deck.hover_enter()
+    clock.advance(FAN_DELAY_MS)
+    deck.drag_begin()
+
+    deck.hover_leave()
+    clock.advance(COLLAPSE_DELAY_MS * 4)
+
+    assert deck.state == STATE_FAN
+    assert deck.panel_visible is True
+
+
+def test_a_drag_blocks_new_peeks_until_it_ends() -> None:
+    clock = FakeClock()
+    deck = machine(clock)
+    deck.hover_enter()
+    clock.advance(FAN_DELAY_MS)
+    deck.drag_begin()
+
+    deck.hover_tab("note-a")
+    clock.advance(PEEK_DELAY_MS * 4)
+    assert deck.peek_id is None
+
+    deck.drag_end()
+    deck.hover_tab("note-b")
+    clock.advance(PEEK_DELAY_MS)
+    assert deck.peek_id == "note-b"
+
+
+def test_after_drag_end_a_normal_hover_leave_collapses_again() -> None:
+    clock = FakeClock()
+    deck = machine(clock)
+    deck.hover_enter()
+    clock.advance(FAN_DELAY_MS)
+    deck.drag_begin()
+
+    deck.drag_end()
+    deck.hover_leave()
+    clock.advance(COLLAPSE_DELAY_MS)
+
+    assert deck.state == STATE_STRIP
+
+
 def test_shutdown_cancels_every_pending_timer() -> None:
     clock = FakeClock()
     deck = machine(clock)

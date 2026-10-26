@@ -71,6 +71,10 @@ class DeckMachine:
         self.state = STATE_STRIP
         self.peek_id: str | None = None
         self._hovered_tab: str | None = None
+        # A tab drag suppresses the hover-leave collapse for its whole life
+        # (ticket 06, spec §7.2): the pointer legitimately leaves the deck
+        # while the button is still held.
+        self._dragging = False
 
         self._expand_timer: Handle | None = None
         self._peek_timer: Handle | None = None
@@ -81,6 +85,10 @@ class DeckMachine:
     @property
     def panel_visible(self) -> bool:
         return self.state != STATE_STRIP
+
+    @property
+    def dragging(self) -> bool:
+        return self._dragging
 
     # -- pointer -------------------------------------------------------
 
@@ -103,6 +111,11 @@ class DeckMachine:
         if self.state == STATE_STRIP:
             self._cancel_expand()
             return
+        if self._dragging:
+            # Releasing will decide where the tab lands; a pointer that
+            # strays off the deck mid-drag must not take the fan with it.
+            self._clear_peek()
+            return
         if self.state != STATE_FAN:
             # Spec §3: an open note never collapses by itself.
             return
@@ -116,7 +129,7 @@ class DeckMachine:
 
     def hover_tab(self, note_id: str) -> None:
         """The pointer entered a tab in the fan."""
-        if self.state != STATE_FAN:
+        if self.state != STATE_FAN or self._dragging:
             return
         self._cancel_collapse()
         if self._hovered_tab == note_id and (
@@ -148,6 +161,24 @@ class DeckMachine:
         self._hovered_tab = None
         self._cancel_peek_timer()
         self._clear_peek()
+
+    # -- drag ----------------------------------------------------------
+
+    def drag_begin(self) -> None:
+        """A tab press crossed the 5 px threshold (spec §7.2).
+
+        The in-fan peek is cleared at once (its hover is over), any pending
+        collapse is cancelled and further collapses are suppressed until
+        :meth:`drag_end`. The fan itself stays mapped for the whole gesture.
+        """
+        self._dragging = True
+        self._cancel_collapse()
+        self._hovered_tab = None
+        self._clear_peek()
+
+    def drag_end(self) -> None:
+        """The drag ended or was cancelled; hover rules apply again."""
+        self._dragging = False
 
     # -- deck transitions ---------------------------------------------
 

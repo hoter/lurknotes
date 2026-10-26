@@ -262,6 +262,24 @@ class LurkNotesApp(Gtk.Application):
     def state(self) -> str:
         return self.deck.state
 
+    @property
+    def dragging(self) -> bool:
+        return self.deck.dragging
+
+    def drag_snapshot(self) -> dict:
+        """Observable drag state for views/tests (ticket 10 reads the dump)."""
+        if self.panel is None:
+            return {
+                "pressed": False,
+                "active": False,
+                "note_id": None,
+                "source_index": -1,
+                "target_index": None,
+                "raised": False,
+                "cursor": None,
+            }
+        return self.panel.drag_snapshot()
+
     def _schedule_timer(self, delay_ms: int, callback) -> int:
         def fire() -> bool:
             callback()
@@ -534,6 +552,10 @@ class LurkNotesApp(Gtk.Application):
             on_scrolled=lambda: self._schedule_test_dump(delay=30),
             on_delete=self.delete_current,
             on_undo=self.undo_delete,
+            on_reorder=self.reorder_note,
+            on_drag_begin=self._on_drag_start,
+            on_drag_update=self._on_drag_update,
+            on_drag_end=self._on_drag_end,
         )
         self.panel.show_fan(self.notes)
         self.panel.set_read_only(self.read_only)
@@ -594,6 +616,32 @@ class LurkNotesApp(Gtk.Application):
 
     def _on_tab_leave(self, note_id: str) -> None:
         self.deck.hover_tab_leave(note_id)
+
+    def _on_drag_start(self, note_id: str) -> None:
+        """The press crossed 5 px: this is a reorder, not a click.
+
+        The state machine hides the in-fan peek and suppresses the hover-leave
+        collapse for the rest of the gesture, so moving the pointer off the
+        deck to aim cannot take the fan away.
+        """
+        self.deck.drag_begin()
+        if self.panel is not None:
+            self.panel.hide_peek()
+        self._schedule_test_dump(delay=20)
+
+    def _on_drag_update(self) -> None:
+        # The target row changes while the pointer moves; the smoke test reads
+        # it from the dump before releasing.
+        self._schedule_test_dump(delay=20)
+
+    def _on_drag_end(self) -> None:
+        self.deck.drag_end()
+        if not self._pointer_over_deck():
+            # Released outside the deck: the reorder was cancelled by the fan,
+            # and the pointer already left long ago, so start the normal
+            # collapse countdown here (an undo toast still pins the panel).
+            self.deck.hover_leave(allow_collapse=self._undo.pending is None)
+        self._schedule_test_dump(delay=20)
 
     def _open_all_notes_for_test(self) -> bool:
         self.show_all_notes()
@@ -695,11 +743,40 @@ class LurkNotesApp(Gtk.Application):
         """Tell read-only views that the deck changed.
 
         Called from every mutation path in this module (text, create, delete,
-        undo). Ticket 06's reorder must call this after it touches
-        ``self.notes`` so All Notes stays in sync without a reopen.
+        undo, reorder) so All Notes stays in sync without a reopen.
         """
         self.deck_changed_event.notify()
         self._schedule_test_dump(delay=100)
+
+    def reorder_note(self, note_id: str, target_index: int) -> bool:
+        """Move *note_id* to *target_index* and persist immediately (spec §4.4).
+
+        The deck's order is the array itself (spec §5.1), so the whole operation
+        is one pop and one insert. A target equal to the current index is a
+        no-op: no save, no view rebuild, no event. Out-of-range targets clamp to
+        the deck.
+
+        Read-only and unconfirmed-corrupt decks still reorder in memory;
+        ``_save_notes`` refuses the write and ticket 08's retry/banner rules
+        keep applying. Views are rebuilt after the gesture has ended, never in
+        the middle of it.
+        """
+        index = index_of(self.notes, note_id)
+        if index == -1:
+            return False
+        target = max(0, min(int(target_index), len(self.notes) - 1))
+        if target == index:
+            return False
+
+        note = self.notes.pop(index)
+        self.notes.insert(target, note)
+        self._save_notes()
+        self.deck_changed()
+        if self.panel is not None:
+            # Same array order in the fan and the panel rail. Safe here only
+            # because the drag callback schedules this after drag-end.
+            self.panel.refresh_notes(self.notes, self.current_id)
+        return True
 
     def _xid(self, window: Gtk.Window) -> int | None:
         surface = window.get_surface()
@@ -1087,6 +1164,10 @@ class LurkNotesApp(Gtk.Application):
                 self.panel.tab_centers() if is_fan else []
             ),
             "tab_heights": self.panel.tab_heights() if is_fan else [],
+            "tab_ids": self.panel.tab_ids(),
+            "tab_titles": self.panel.tab_titles(),
+            "tab_cursors": self.panel.tab_cursors(),
+            "drag": self.panel.drag_snapshot(),
             "new_button_center": (
                 self.panel.new_button_center() if is_fan else None
             ),
@@ -1098,6 +1179,7 @@ class LurkNotesApp(Gtk.Application):
             "rail_centers": (
                 self.panel.rail_centers() if is_open else []
             ),
+            "rail_titles": self.panel.rail_titles() if is_open else [],
             "active_index": (
                 self.panel.active_index() if is_open else -1
             ),
