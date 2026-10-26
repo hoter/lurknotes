@@ -158,6 +158,21 @@ def discard_if_untouched(
     return note
 
 
+def discard_all_untouched(notes: list[Note], session_ids: set[str]) -> list[Note]:
+    """Remove every untouched note this session created; return the removed.
+
+    Shutdown uses this instead of :func:`discard_if_untouched` so no session
+    note can slip out of the process still untouched, whatever the deck state
+    was. Loaded empty notes are not in ``session_ids`` and stay.
+    """
+    removed = [
+        note for note in notes if note.id in session_ids and note.is_untouched()
+    ]
+    for note in removed:
+        notes.remove(note)
+    return removed
+
+
 def cycle_id(notes: list[Note], current_id: str | None, step: int) -> str | None:
     """The id of the note *step* places away, wrapping at both ends.
 

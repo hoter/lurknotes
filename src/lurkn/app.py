@@ -41,6 +41,7 @@ from .notes import (
     Note,
     add_at_top,
     cycle_id,
+    discard_all_untouched,
     discard_if_untouched,
     find_note,
 )
@@ -101,6 +102,7 @@ class LurkNotesApp(Gtk.Application):
         # created. A loaded empty note has the same timestamps as a fresh one,
         # so timestamps alone must never decide it (spec §5.4).
         self.session_ids: set[str] = set()
+        self.shutdown_done = False
         self.state = STATE_STRIP
         self.current_id: str | None = None
         self.save_source = 0
@@ -122,6 +124,12 @@ class LurkNotesApp(Gtk.Application):
         display = Gdk.Display.get_default()
         if display is not None:
             install_theme(display)
+        # Spec §5.2 saves on exit; Ctrl+Q and the All Notes quit item (ticket
+        # 07) both go through this action, so the shutdown cleanup runs too.
+        quit_action = Gio.SimpleAction.new("quit", None)
+        quit_action.connect("activate", self._on_quit)
+        self.add_action(quit_action)
+        self.set_accels_for_action("app.quit", ["<Control>q"])
         self._load_notes()
 
     def do_activate(self) -> None:
@@ -133,11 +141,42 @@ class LurkNotesApp(Gtk.Application):
                 self.panel.set_visible(True)
 
     def do_shutdown(self) -> None:
-        self._flush_current()
+        self._shutdown_deck()
         if self.x11 is not None:
             self.x11.close()
             self.x11 = None
         Gtk.Application.do_shutdown(self)
+
+    def _on_quit(self, *_args) -> None:
+        self.quit()
+
+    def _on_close_request(self, _window: Gtk.Window) -> bool:
+        """A WM close is a normal shutdown, not one lost window (spec §5.2).
+
+        Without this, closing the panel through the WM leaves the strip alive
+        and the process running with half a deck. Returning True keeps the
+        widget intact until ``do_shutdown`` has flushed and saved; GTK
+        destroys the windows right after.
+        """
+        self.quit()
+        return True
+
+    def _shutdown_deck(self) -> None:
+        """Flush, drop untouched session notes, save (spec §5.2, §5.4).
+
+        An untouched note must not reach the next launch: on disk it would
+        come back as a *loaded* empty note and live forever. The flush runs
+        first, because typed text is what makes a note non-untouched. Loaded
+        empty notes are never in ``session_ids`` and therefore survive.
+        """
+        if self.shutdown_done:
+            return
+        self.shutdown_done = True
+        self._flush_current()
+        removed = discard_all_untouched(self.notes, self.session_ids)
+        self.current_id = None
+        if removed:
+            self._save_notes()
 
     # -- data ----------------------------------------------------------
 
@@ -204,6 +243,8 @@ class LurkNotesApp(Gtk.Application):
 
         self.strip.connect("map", self._on_strip_map)
         self.panel.connect("map", self._on_panel_map)
+        for window in (self.strip, self.panel):
+            window.connect("close-request", self._on_close_request)
         self.strip.set_visible(True)
         self.panel.set_visible(True)
         self.state = STATE_FAN
@@ -420,6 +461,9 @@ class LurkNotesApp(Gtk.Application):
             ),
             "rail_centers": (
                 self.panel.rail_centers() if is_open else []
+            ),
+            "active_index": (
+                self.panel.active_index() if is_open else -1
             ),
             "text": self.panel.note.text() if is_open else None,
             "cursor_offset": (

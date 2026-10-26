@@ -9,6 +9,7 @@ from lurkn.notes import (
     Note,
     add_at_top,
     cycle_id,
+    discard_all_untouched,
     discard_if_untouched,
     find_note,
     index_of,
@@ -238,3 +239,29 @@ def test_cycle_from_no_open_note_opens_either_end():
     assert cycle_id(notes, None, 1) == "a"
     assert cycle_id(notes, None, -1) == "b"
     assert cycle_id([], None, 1) is None
+
+
+def test_shutdown_discards_every_untouched_session_note():
+    # Spec §5.4: an untouched note created in this session must not reach the
+    # next launch, where it would come back as a loaded empty note.
+    fresh = Note.create(now=123.0)
+    edited_empty = make_note("edited", "", created=1.0, updated=2.0)
+    loaded_empty = make_note("loaded", "", created=1.0, updated=1.0)
+    notes = [fresh, edited_empty, loaded_empty]
+
+    removed = discard_all_untouched(notes, {fresh.id, edited_empty.id})
+
+    assert removed == [fresh]
+    assert notes == [edited_empty, loaded_empty]
+
+
+def test_a_note_flushed_at_shutdown_survives_the_discard():
+    # do_shutdown flushes first: the text that arrives with the flush makes
+    # the note non-untouched, so the discard decision must keep it.
+    note = Note.create(now=1.0)
+    note.text = "typed just before quitting"
+    note.updated = 2.0
+    notes = [note]
+
+    assert discard_all_untouched(notes, {note.id}) == []
+    assert notes == [note]
