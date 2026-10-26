@@ -101,6 +101,11 @@ class NotePage(Gtk.Box):
         try:
             self.buffer.set_text(note.text)
             self.buffer.place_cursor(self.buffer.get_end_iter())
+            # Spec §8: an existing note opens with the caret at the end. A
+            # plain place_cursor leaves a long note scrolled to the top.
+            self.text_view.scroll_to_mark(
+                self.buffer.get_insert(), 0.0, False, 0.0, 0.0
+            )
         finally:
             self._loading = False
 
