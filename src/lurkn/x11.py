@@ -52,6 +52,36 @@ def _edge_rect(workarea: Rect, scale: float, width: int, gap: int) -> Rect:
     )
 
 
+def centered_position(
+    workarea: Rect,
+    scale: float,
+    width: int,
+    height: int,
+    frame_extents: tuple[int, int, int, int] = (0, 0, 0, 0),
+) -> tuple[int, int]:
+    """The X11 client origin that centres a ``width x height`` visible window.
+
+    ``workarea`` and the window size are logical; the result is physical for
+    ``XMoveWindow``. GTK draws client-side-decorations shadows *outside* the
+    visible window, so ``frame_extents`` (left, right, top, bottom, physical)
+    must be subtracted to centre the part the user sees.
+    """
+    left, _right, top, _bottom = frame_extents
+    visible_width = round(width * scale)
+    visible_height = round(height * scale)
+    x = (
+        round(workarea.x * scale)
+        + (round(workarea.width * scale) - visible_width) // 2
+        - left
+    )
+    y = (
+        round(workarea.y * scale)
+        + (round(workarea.height * scale) - visible_height) // 2
+        - top
+    )
+    return x, y
+
+
 class _ClientMessage(ctypes.Structure):
     _fields_ = [
         ("type", ctypes.c_int),
@@ -132,6 +162,13 @@ class X11:
             ctypes.c_int,
             ctypes.c_uint,
             ctypes.c_uint,
+        ]
+        lib.XMoveWindow.restype = ctypes.c_int
+        lib.XMoveWindow.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.c_int,
         ]
         lib.XSendEvent.restype = ctypes.c_int
         lib.XSendEvent.argtypes = [
@@ -221,6 +258,54 @@ class X11:
             int(rect.height),
         )
         self.flush()
+
+    def move(self, xid: int, x: int, y: int) -> None:
+        """Move an already-mapped window; its size is left to GTK/the WM."""
+        self._lib.XMoveWindow(self._display, xid, int(x), int(y))
+        self.flush()
+
+    def frame_extents(self, xid: int) -> tuple[int, int, int, int]:
+        """GTK's client-side-decoration extents, in physical pixels.
+
+        ``_GTK_FRAME_EXTENTS`` is (left, right, top, bottom) and lies outside
+        the visible window. Returns zeros when GTK has not set it yet.
+        """
+        actual_type = ctypes.c_ulong()
+        actual_format = ctypes.c_int()
+        nitems = ctypes.c_ulong()
+        bytes_after = ctypes.c_ulong()
+        data = ctypes.c_void_p()
+        status = self._lib.XGetWindowProperty(
+            self._display,
+            xid,
+            self.atom("_GTK_FRAME_EXTENTS"),
+            0,
+            4,
+            0,
+            _XA_CARDINAL,
+            ctypes.byref(actual_type),
+            ctypes.byref(actual_format),
+            ctypes.byref(nitems),
+            ctypes.byref(bytes_after),
+            ctypes.byref(data),
+        )
+        valid = (
+            status == 0
+            and bool(data)
+            and nitems.value == 4
+            and actual_format.value == 32
+            and actual_type.value == _XA_CARDINAL
+        )
+        if not valid:
+            if data.value:
+                self._lib.XFree(data)
+            return (0, 0, 0, 0)
+        try:
+            values = ctypes.cast(data, ctypes.POINTER(ctypes.c_ulong))
+            extents = tuple(int(values[index]) for index in range(4))
+        finally:
+            self._lib.XFree(data)
+        return extents
 
     def _client_message(self, xid: int, message_type: int, data0: int, data1: int = 0) -> None:
         event = _Event()

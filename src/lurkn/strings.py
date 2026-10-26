@@ -44,6 +44,14 @@ STORAGE_READ_FAILED = "Could not read the notes file: {detail}"
 STATUS_CONTINUE = "Continue"
 STATUS_DISMISS = "Dismiss status"
 
+# All Notes (spec §4.3, §6.4).
+ALL_NOTES_TITLE = "All Notes"
+ALL_NOTES_SEARCH = "Search all notes"
+ALL_NOTES_MENU = "Menu"
+ALL_NOTES_EMPTY = "No notes yet"
+ALL_NOTES_NO_MATCH = "No notes match your search"
+QUIT = "Quit LurkNotes"
+
 USAGE = "usage: lurknotes [new|all]"
 UNKNOWN_COMMAND = "lurknotes: unknown command {command!r}; " + USAGE
 ERROR = "lurknotes: {message}"

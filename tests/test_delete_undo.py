@@ -19,6 +19,7 @@ from lurkn.app import (
     UndoController,
 )
 from lurkn.deck import DeckMachine
+from lurkn.events import DeckChanged
 from lurkn.notes import Note, discard_if_untouched
 
 
@@ -68,6 +69,9 @@ class FakePanel:
 
     def hide_toast(self) -> None:
         self.toast_visible = False
+
+    def set_visible(self, visible: bool) -> None:
+        self.visible = visible
 
     def show_note(self, note: Note, notes) -> None:
         self.shown.append(("note", note.id))
@@ -137,6 +141,7 @@ def make_app(
     app.x11 = None
     app._test_dump_path = None
     app._test_type = None
+    app.deck_changed_event = DeckChanged()
     app._retrier = NullRetrier()
     scheduler = FakeScheduler()
     app._undo = UndoController(

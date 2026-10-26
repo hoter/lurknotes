@@ -198,6 +198,87 @@ tooltip label {
   color: #e9e9f1;
 }
 
+/* All Notes — a normal window (spec §6.4), same dark palette (§6.5). */
+
+.lurk.all-notes,
+.lurk .all-notes-body {
+  background-color: #1c1c22;
+  color: #e9e9f1;
+}
+
+.lurk headerbar.all-notes-header {
+  background-color: #24242c;
+  color: #e9e9f1;
+  box-shadow: none;
+  border-bottom: 1px solid #17171d;
+}
+
+.lurk headerbar.all-notes-header label {
+  color: #e9e9f1;
+}
+
+.lurk searchentry {
+  background-color: #2b2b35;
+  color: #e9e9f1;
+  border: 1px solid #353542;
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.lurk searchentry text {
+  background-color: transparent;
+  color: #e9e9f1;
+}
+
+.lurk searchentry placeholder {
+  color: #6f6f7e;
+}
+
+.lurk .all-notes-row {
+  background-color: #24242c;
+  color: #e9e9f1;
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+
+.lurk .all-notes-row:hover {
+  background-color: #353542;
+}
+
+.lurk .all-notes-title {
+  color: #e9e9f1;
+  font-weight: 700;
+}
+
+.lurk .all-notes-snippet {
+  color: #a9a9b8;
+  font-size: 0.9em;
+}
+
+.lurk .all-notes-date {
+  color: #6f6f7e;
+  font-size: 0.85em;
+}
+
+.lurk .all-notes-empty {
+  color: #6f6f7e;
+  padding: 24px;
+}
+
+.lurk popover {
+  background-color: #24242c;
+  color: #e9e9f1;
+}
+
+.lurk popover button {
+  background-color: transparent;
+  color: #e9e9f1;
+}
+
+.lurk popover button:hover {
+  background-color: #353542;
+}
+
 .lurk .undo-toast {
   background-color: #3a3a46;
   color: #e9e9f1;
