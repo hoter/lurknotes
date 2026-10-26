@@ -36,6 +36,10 @@ class PanelWindow(Gtk.Window):
         on_scrolled: Callable[[], None],
         on_delete: Callable[[], bool],
         on_undo: Callable[[], bool],
+        on_reorder: Callable[[str, int], None],
+        on_drag_begin: Callable[[str], None],
+        on_drag_update: Callable[[], None],
+        on_drag_end: Callable[[], None],
         on_focus_click: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(application=application, title=strings.FAN_TITLE)
@@ -51,12 +55,16 @@ class PanelWindow(Gtk.Window):
         self.add_css_class("panel")
 
         self.fan = FanPage(
-            on_open,
-            on_new,
-            on_collapse,
-            on_hover_tab,
-            on_leave_tab,
-            on_scrolled,
+            on_open=on_open,
+            on_new=on_new,
+            on_collapse=on_collapse,
+            on_hover_tab=on_hover_tab,
+            on_leave_tab=on_leave_tab,
+            on_reorder=on_reorder,
+            on_scrolled=on_scrolled,
+            on_drag_begin=on_drag_begin,
+            on_drag_update=on_drag_update,
+            on_drag_end=on_drag_end,
         )
         self.note = NotePage(on_close, on_open, on_changed)
 
@@ -183,6 +191,21 @@ class PanelWindow(Gtk.Window):
 
     def tab_heights(self) -> list[int]:
         return self.fan.tab_heights()
+
+    def tab_ids(self) -> list[str]:
+        return self.fan.tab_ids()
+
+    def tab_titles(self) -> list[str]:
+        return self.fan.tab_titles()
+
+    def tab_cursors(self) -> list[str | None]:
+        return self.fan.tab_cursors()
+
+    def drag_snapshot(self) -> dict:
+        return self.fan.drag_snapshot()
+
+    def rail_titles(self) -> list[str]:
+        return self.note.rail_titles()
 
     def scroll_value(self) -> float:
         return self.fan.scroll_value()

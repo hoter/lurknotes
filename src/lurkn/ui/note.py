@@ -138,6 +138,18 @@ class NotePage(Gtk.Box):
             child = child.get_next_sibling()
         return centers
 
+    def rail_titles(self) -> list[str]:
+        """Rendered rail labels in order; the rail must match the deck."""
+        titles: list[str] = []
+        child = self.rail_rows.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Button):
+                label = child.get_child()
+                if isinstance(label, Gtk.Label):
+                    titles.append(label.get_text())
+            child = child.get_next_sibling()
+        return titles
+
     def active_index(self) -> int:
         """Rail row of the highlighted tab, or -1 (spec §6.3).
 

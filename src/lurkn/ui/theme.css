@@ -91,6 +91,14 @@ window.lurk {
   background-color: #353542;
 }
 
+/* Spec §6.5: while a reorder drag is live the tab is lifted: lighter
+   background plus a shadow. Placed after :hover so it wins at equal
+   specificity even while the pointer is still over the tab. */
+.lurk .tab.dragging {
+  background-color: #3d3d4c;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.55);
+}
+
 .lurk .tab label {
   color: #e9e9f1;
 }
