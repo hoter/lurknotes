@@ -4,6 +4,27 @@ Notes deck at the right edge of the screen for Ubuntu 24.04 / GNOME 46.
 Spec: [.scratch/edge-notes/spec.md](.scratch/edge-notes/spec.md).
 Plan: [.scratch/edge-notes/plan.md](.scratch/edge-notes/plan.md).
 
+## Screenshots
+
+<img src="docs/screenshots/fan.png" width="380" alt="The fan: search, note tabs and the edge strip">
+
+The fan at the right edge: search over the notes list, the 10 px strip on the right.
+
+| Peek | Search |
+|:---:|:---:|
+| ![](docs/screenshots/fan-peek.png) | ![](docs/screenshots/fan-search.png) |
+| **Hover a tab to peek** | **Filter the deck as you type** |
+
+| Editor | Drag reorder |
+|:---:|:---:|
+| ![](docs/screenshots/note.png) | ![](docs/screenshots/drag.png) |
+| **One note, rail and editor** | **The rows make room for the dragged tab** |
+
+<img src="docs/screenshots/empty.png" width="280" alt="Empty deck with the New note button">
+
+Screenshots are generated from the real app by `scripts/screenshots.py` (isolated
+data, real X11 windows), so they can be refreshed after UI changes.
+
 ## Run
 
 ```sh
@@ -60,7 +81,7 @@ it. Nothing is written outside `$XDG_DATA_HOME` and `~/.config`.
 
 ```sh
 python3 -m venv --system-site-packages .venv
-.venv/bin/pip install pytest
+.venv/bin/pip install pytest pillow
 
 .venv/bin/python -m pytest
 .venv/bin/python scripts/smoke.py
@@ -71,6 +92,8 @@ python3 -m venv --system-site-packages .venv
 .venv/bin/python scripts/smoke_drag.py
 .venv/bin/python scripts/smoke_integration.py
 .venv/bin/python scripts/acceptance.py
+
+.venv/bin/python scripts/screenshots.py   # refresh docs/screenshots
 ```
 
 The venv needs `--system-site-packages`: PyGObject and GTK 4 come from the
