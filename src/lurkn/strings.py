@@ -4,24 +4,32 @@ STRIP_TITLE = "LurkNotes — strip"
 FAN_TITLE = "LurkNotes — fan"
 NOTE_TITLE = "LurkNotes — note"
 
-NOTES_HEADER = "NOTES"
+NOTES_HEADER = "Lurk Notes"
 NEW_NOTE = "New note (+)"
 NEW_NOTE_LABEL = "+"
 FAN_HINT = "hover a note to peek · drag to reorder"
+FAN_HINT_FILTERED = "hover a note to peek · reordering is off while filtering"
+FAN_SEARCH = "Search notes"
+NO_MATCH = "No notes match your search"
+EMPTY_NEW_NOTE = "+ New note"
 PEEK_HINT = "Hover a note to peek"
 PEEK_EMPTY = "No body text"
 COLLAPSE_DECK = "Collapse deck"
+# The panel collapses towards the right screen edge, which is where the strip
+# lives, so the chevron points that way instead of reusing the close glyph.
+COLLAPSE = "»"
 NO_NOTES = "No notes yet"
 UNTITLED = "Untitled"
 UNDO_TOAST = "Deleted. 10s to undo"
 UNDO = "Undo"
 UNDO_HINT = "Undo delete (Ctrl+Z)"
 CLOSE = "×"
-CLOSE_NOTE = "Close note (Esc)"
+CLOSE_NOTE = "Back to notes (Esc)"
+DELETE_NOTE = "Delete note (Ctrl+Backspace)"
 CLICK_TO_TYPE = "Click to type"
 ONBOARDING_TEXT = (
-    "Bind hotkeys in GNOME Settings → Keyboard → Custom Shortcuts:\n"
-    "Ctrl+Alt+N runs lurknotes new · Ctrl+Alt+A runs lurknotes all"
+    "Bind a hotkey in GNOME Settings → Keyboard → Custom Shortcuts:\n"
+    "Ctrl+Alt+N runs lurknotes new"
 )
 ONBOARDING_DISMISS = "Got it"
 SAVE_FAILED = "Save failed"
@@ -50,17 +58,10 @@ STORAGE_READ_FAILED = "Could not read the notes file: {detail}"
 
 STATUS_CONTINUE = "Continue"
 STATUS_DISMISS = "Dismiss status"
-
-# All Notes (spec §4.3, §6.4).
-ALL_NOTES_TITLE = "All Notes"
-ALL_NOTES_SEARCH = "Search all notes"
-ALL_NOTES_MENU = "Menu"
-ALL_NOTES_EMPTY = "No notes yet"
-ALL_NOTES_NO_MATCH = "No notes match your search"
 QUIT = "Quit LurkNotes"
 
 USAGE = (
-    "usage: lurknotes [new|all] | lurknotes --autostart | "
+    "usage: lurknotes [new] | lurknotes --autostart | "
     "lurknotes --install-autostart | lurknotes --help"
 )
 CLI_UNKNOWN_COMMAND = "lurknotes: unknown command {argument!r}; " + USAGE

@@ -19,9 +19,10 @@ def test_no_arguments_means_expand_the_fan() -> None:
     assert parse([]) == Command()
 
 
-def test_new_and_all_are_the_only_actions() -> None:
+def test_new_is_the_only_action() -> None:
     assert parse(["new"]).action == "new"
-    assert parse(["all"]).action == "all"
+    with pytest.raises(CliError, match="unknown"):
+        parse(["all"])
 
 
 def test_autostart_is_accepted_without_a_command() -> None:
@@ -46,8 +47,6 @@ def test_unknown_arguments_are_rejected() -> None:
 def test_duplicate_actions_are_rejected() -> None:
     with pytest.raises(CliError):
         parse(["new", "new"])
-    with pytest.raises(CliError):
-        parse(["new", "all"])
 
 
 def test_autostart_may_not_carry_a_command() -> None:
@@ -58,7 +57,7 @@ def test_autostart_may_not_carry_a_command() -> None:
 
 def test_install_autostart_may_not_carry_other_operands() -> None:
     with pytest.raises(CliError):
-        parse(["--install-autostart", "all"])
+        parse(["--install-autostart", "new"])
     with pytest.raises(CliError):
         parse(["--install-autostart", "--autostart"])
 

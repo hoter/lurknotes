@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from . import strings
 
-ACTIONS = ("new", "all")
+ACTIONS = ("new",)
 
 
 class CliError(ValueError):
@@ -23,7 +23,7 @@ class CliError(ValueError):
 class Command:
     """What one invocation wants the app to do.
 
-    ``action`` is ``""`` (expand the fan), ``"new"`` or ``"all"``.
+    ``action`` is ``""`` (expand the fan) or ``"new"``.
     ``autostart`` is the quiet session launch: strip only, no focus.
     ``install_autostart`` writes the .desktop file and exits.
     """

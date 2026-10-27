@@ -11,7 +11,7 @@ The machine owns three facts and nothing else:
 
 The app maps those facts onto widgets; clicks still go through the app, which
 tells the machine when a note opened or closed. This is the seam future
-tickets (drag reorder, All Notes) build on.
+later tickets (drag reorder) build on.
 """
 
 from __future__ import annotations

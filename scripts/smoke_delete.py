@@ -377,6 +377,42 @@ def main() -> int:
             _wait_for_ids_on_disk(notes_path, [first_id, second_id, third_id])
             print("smoke-delete: the Undo button restored the note")
 
+            # -- the rail Delete button deletes the open note ------------
+            opened = _wait_dump(
+                dump,
+                app,
+                lambda snapshot: snapshot.get("state") == "open"
+                and snapshot.get("note_delete_center") is not None,
+            )
+            _click_center(
+                xtest, panel, opened["note_delete_center"], "the rail delete button"
+            )
+            deleted = _wait_toast(
+                dump, app, state="open", ids=[first_id, third_id]
+            )
+            if deleted.get("current_id") != third_id:
+                raise SmokeFailure(
+                    f"the rail delete button left {deleted.get('current_id')} "
+                    "open, expected the next note"
+                )
+            _wait_for_ids_on_disk(notes_path, [first_id, third_id], timeout=2.0)
+            _click_center(
+                xtest, panel, deleted["toast"]["button_center"], "Undo button"
+            )
+            _wait_toast(
+                dump,
+                app,
+                visible=False,
+                state="open",
+                current_id=second_id,
+                ids=[first_id, second_id, third_id],
+            )
+            _wait_for_ids_on_disk(notes_path, [first_id, second_id, third_id])
+            print(
+                "smoke-delete: the rail delete button deleted the note, showed "
+                "the toast, and Undo restored it"
+            )
+
             # -- expiry finalises the delete -----------------------------
             deleted = _delete_and_expect(
                 xtest, app, panel, dump, [first_id, third_id], "open"

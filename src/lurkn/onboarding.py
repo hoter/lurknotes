@@ -1,6 +1,6 @@
 """First-launch onboarding marker (spec §4.6).
 
-The hint about binding ``Ctrl+Alt+N`` / ``Ctrl+Alt+A`` is shown once. The fact
+The hint about binding ``Ctrl+Alt+N`` is shown once. The fact
 that it was shown lives in ``$XDG_DATA_HOME/lurknotes/onboarded``. Writing the
 marker is best effort: a read-only data directory must not stop the app.
 """

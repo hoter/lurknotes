@@ -1,4 +1,4 @@
-/* LurkNotes dark palette — spec §6.5. No light-theme fallbacks. */
+/* LurkNotes dark palette — spec §6.4. No light-theme fallbacks. */
 
 window.lurk {
   background-color: #1c1c22;
@@ -60,6 +60,28 @@ window.lurk {
   padding: 12px;
 }
 
+/* The empty deck's call to action: the one filled button besides onboarding. */
+.lurk .fan .empty-new {
+  background-color: #e9e9f1;
+  border-color: #e9e9f1;
+  font-weight: 700;
+  padding: 8px 14px;
+}
+
+.lurk .fan .empty-new label {
+  color: #1c1c22;
+}
+
+.lurk .fan .empty-new:hover {
+  background-color: #f5f5f9;
+  border-color: #f5f5f9;
+}
+
+.lurk .fan .empty-new:active {
+  background-color: #c9c9d4;
+  border-color: #c9c9d4;
+}
+
 .lurk button {
   background-image: none;
   background-color: #2b2b35;
@@ -83,20 +105,34 @@ window.lurk {
   outline-width: 0;
 }
 
+/* The fan header × quits the app, while the chevron next to it only collapses
+   the deck to the edge strip. The red hover keeps the two roles apart. */
+.lurk .fan .quit:hover {
+  background-color: #4a2f35;
+}
+
 .lurk .tab {
   padding: 8px 10px;
+  /* Spec §7.2: the rows make room for a dragged tab instead of jumping. */
+  transition: transform 150ms ease;
 }
 
 .lurk .tab:hover {
   background-color: #353542;
 }
 
-/* Spec §6.5: while a reorder drag is live the tab is lifted: lighter
+/* Spec §6.4: while a reorder drag is live the tab is lifted: lighter
    background plus a shadow. Placed after :hover so it wins at equal
    specificity even while the pointer is still over the tab. */
 .lurk .tab.dragging {
   background-color: #3d3d4c;
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.55);
+}
+
+/* The real tab keeps owning the gesture but is hidden while the ghost in the
+   rows overlay follows the pointer. */
+.lurk .tab.drag-origin {
+  opacity: 0;
 }
 
 .lurk .tab label {
@@ -117,8 +153,22 @@ window.lurk {
   background-color: #353542;
 }
 
+/* The rail's collapse and delete buttons must read as one control row:
+   same box regardless of the glyph or icon inside. */
+.lurk .rail button.rail-action {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+
 .lurk .rail button.active {
   background-color: #2b2b35;
+}
+
+/* Delete is the one destructive action in the rail; the red hover marks it
+   apart from close. */
+.lurk .rail .note-delete:hover {
+  background-color: #4a2f35;
 }
 
 .lurk .rail button.active label {
@@ -190,12 +240,39 @@ window.lurk {
   font-size: 0.9em;
 }
 
+/* The banner background matches the default button background, so the
+   dismiss button would blend in. Give it a filled, high-contrast look so it
+   reads as the actionable "Got it" control. */
 .lurk .onboarding button {
-  padding: 2px 8px;
+  padding: 4px 14px;
+}
+
+.lurk .onboarding .onboarding-dismiss {
+  background-color: #e9e9f1;
+  border-color: #e9e9f1;
+  font-weight: 700;
+}
+
+.lurk .onboarding .onboarding-dismiss label {
+  color: #1c1c22;
+}
+
+.lurk .onboarding .onboarding-dismiss:hover {
+  background-color: #f5f5f9;
+  border-color: #f5f5f9;
+}
+
+.lurk .onboarding .onboarding-dismiss:active {
+  background-color: #c9c9d4;
+  border-color: #c9c9d4;
+}
+
+.lurk .onboarding .onboarding-dismiss:focus {
+  border-color: #a9a9b8;
 }
 
 /* Scrollbars: the default light adwaita trough is a white strip on the dark
-   fan and the editor. Spec §6.5 wants every surface dark. */
+   fan and the editor. Spec §6.4 wants every surface dark. */
 .lurk scrollbar {
   background-color: transparent;
   border: none;
@@ -232,25 +309,9 @@ tooltip label {
   color: #e9e9f1;
 }
 
-/* All Notes — a normal window (spec §6.4), same dark palette (§6.5). */
-
-.lurk.all-notes,
-.lurk .all-notes-body {
-  background-color: #1c1c22;
-  color: #e9e9f1;
-}
-
-.lurk headerbar.all-notes-header {
-  background-color: #24242c;
-  color: #e9e9f1;
-  box-shadow: none;
-  border-bottom: 1px solid #17171d;
-}
-
-.lurk headerbar.all-notes-header label {
-  color: #e9e9f1;
-}
-
+/* GtkSearchEntry's CSS node is ``entry.search`` (``searchentry`` matches
+   nothing), so both spellings are kept while the old one ages out. */
+.lurk entry.search,
 .lurk searchentry {
   background-color: #2b2b35;
   color: #e9e9f1;
@@ -259,58 +320,15 @@ tooltip label {
   box-shadow: none;
 }
 
+.lurk entry.search text,
 .lurk searchentry text {
   background-color: transparent;
   color: #e9e9f1;
 }
 
+.lurk entry.search placeholder,
 .lurk searchentry placeholder {
   color: #6f6f7e;
-}
-
-.lurk .all-notes-row {
-  background-color: #24242c;
-  color: #e9e9f1;
-  padding: 8px 12px;
-  border-radius: 6px;
-}
-
-.lurk .all-notes-row:hover {
-  background-color: #353542;
-}
-
-.lurk .all-notes-title {
-  color: #e9e9f1;
-  font-weight: 700;
-}
-
-.lurk .all-notes-snippet {
-  color: #a9a9b8;
-  font-size: 0.9em;
-}
-
-.lurk .all-notes-date {
-  color: #6f6f7e;
-  font-size: 0.85em;
-}
-
-.lurk .all-notes-empty {
-  color: #6f6f7e;
-  padding: 24px;
-}
-
-.lurk popover {
-  background-color: #24242c;
-  color: #e9e9f1;
-}
-
-.lurk popover button {
-  background-color: transparent;
-  color: #e9e9f1;
-}
-
-.lurk popover button:hover {
-  background-color: #353542;
 }
 
 .lurk .undo-toast {

@@ -22,6 +22,7 @@ from gi.repository import Gdk, GLib, Graphene, Gtk, Pango
 from .. import strings
 from ..notes import PREVIEW_LINES, Note
 from ..reorder import CLICK, REORDER, DragSession, target_index
+from ..search import search_notes
 
 # Six 0.9em body lines plus padding; fixed so the pane never resizes.
 PEEK_PANE_HEIGHT = 132
@@ -38,6 +39,8 @@ class FanPage(Gtk.Box):
         on_hover_tab: Callable[[str], None],
         on_leave_tab: Callable[[str], None],
         on_reorder: Callable[[str, int], None],
+        on_quit: Callable[[], None],
+        on_search_focus: Callable[[], None],
         on_scrolled: Callable[[], None] | None = None,
         on_drag_begin: Callable[[str], None] | None = None,
         on_drag_update: Callable[[], None] | None = None,
@@ -45,6 +48,7 @@ class FanPage(Gtk.Box):
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self._on_open = on_open
+        self._on_new = on_new
         self._on_collapse = on_collapse
         self._on_hover_tab = on_hover_tab
         self._on_leave_tab = on_leave_tab
@@ -55,6 +59,10 @@ class FanPage(Gtk.Box):
         self._on_drag_end = on_drag_end
         self._tabs: dict[str, Gtk.Button] = {}
         self._tab_order: list[str] = []
+        # The full deck, in manual order; the search box filters the render
+        # but never reorders this list.
+        self._notes: list[Note] = []
+        self.empty_new_button: Gtk.Button | None = None
         self._peek_note: str | None = None
         self._peek_lines: list[str] = []
         # One press on one tab. It stays a click candidate until 5 logical px.
@@ -62,6 +70,19 @@ class FanPage(Gtk.Box):
         self._drag_button: Gtk.Button | None = None
         self._drag_start: tuple[float, float] | None = None
         self._drag_target: int | None = None
+        # Reorder animation state: the dragged tab follows the pointer via a
+        # per-widget CSS transform, and the rows it passes make room through
+        # two classes whose offset comes from a fan-wide provider (the row
+        # height is not known until the list is allocated).
+        # One provider, attached to every tab: a provider added to the fan's
+        # own style context does not reach its children in GTK4.
+        self._shift_provider = Gtk.CssProvider()
+        self._drag_ghost: Gtk.Button | None = None
+        self._drag_dy = 0.0
+        # Layout spans frozen at drag start: CSS transforms are reflected by
+        # compute_bounds, so recomputing them after rows shift would move the
+        # target under the pointer.
+        self._drag_spans: list[tuple[float, float]] = []
         self._pending_notes: list[Note] | None = None
         self._grab_cursor = self._make_cursor("grab")
         self._grabbing_cursor = self._make_cursor("grabbing")
@@ -85,20 +106,46 @@ class FanPage(Gtk.Box):
         bar.append(new)
         self.new_button = new
 
-        # Spec §6.2/§7.3: the header × has to work without keyboard focus,
-        # because hovering the deck never takes focus and Esc cannot arrive.
-        close = Gtk.Button(label=strings.CLOSE)
-        close.set_tooltip_text(strings.COLLAPSE_DECK)
-        close.connect("clicked", lambda _button: on_collapse())
-        bar.append(close)
-        self.close_button = close
+        # Spec §6.2/§7.3: the header collapse button has to work without
+        # keyboard focus, because hovering the deck never takes focus and Esc
+        # cannot arrive. It shows a chevron rather than "×": collapsing keeps
+        # the app alive as the edge strip, so it must not read as a quit.
+        collapse = Gtk.Button(label=strings.COLLAPSE)
+        collapse.set_tooltip_text(strings.COLLAPSE_DECK)
+        collapse.connect("clicked", lambda _button: on_collapse())
+        bar.append(collapse)
+        self.collapse_button = collapse
+
+        # The deck has no titlebar, so quitting the app needs its own control.
+        quit_button = Gtk.Button(label=strings.CLOSE)
+        quit_button.add_css_class("quit")
+        quit_button.set_tooltip_text(strings.QUIT)
+        quit_button.connect("clicked", lambda _button: on_quit())
+        bar.append(quit_button)
+        self.quit_button = quit_button
+
+        # Search sits between the header and the hint, above the notes list.
+        # It filters the deck live and is the only fan widget that can take
+        # the keyboard: the first click has to ask the app for input focus
+        # (the panel is mapped input-less for hover, spec §9.1).
+        self.search = Gtk.SearchEntry()
+        self.search.set_placeholder_text(strings.FAN_SEARCH)
+        self.search.add_css_class("fan-search")
+        self.search.set_margin_top(6)
+        self.search.set_margin_bottom(6)
+        self.search.connect("changed", self._on_search_changed)
+        search_click = Gtk.GestureClick()
+        search_click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        search_click.connect("pressed", lambda *_args: on_search_focus())
+        self.search.add_controller(search_click)
 
         hint = Gtk.Label(label=strings.FAN_HINT)
         hint.set_xalign(0)
         hint.set_ellipsize(Pango.EllipsizeMode.END)
         hint.add_css_class("hint")
-        bar.set_margin_bottom(2)
+        self.hint = hint
         header.append(bar)
+        header.append(self.search)
         header.append(hint)
         self.append(header)
 
@@ -110,7 +157,12 @@ class FanPage(Gtk.Box):
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroller.set_hexpand(True)
         scroller.set_vexpand(True)
-        scroller.set_child(self.rows)
+        # Tabs paint in child order, so a translated real tab would slide
+        # *under* the rows below it. The overlay carries a ghost copy above
+        # the whole list while the real tab is hidden at its source slot.
+        self.rows_overlay = Gtk.Overlay()
+        self.rows_overlay.set_child(self.rows)
+        scroller.set_child(self.rows_overlay)
         self.scroller = scroller
         self.append(scroller)
 
@@ -145,30 +197,79 @@ class FanPage(Gtk.Box):
         gesture ends.
         """
         pending = list(notes)
+        self._notes = pending
         if self._drag is not None:
             self._pending_notes = pending
             return
         self._install_notes(pending)
 
+    def _on_search_changed(self, _entry: Gtk.SearchEntry) -> None:
+        # Rebuilding mid-gesture would destroy the button that owns the drag.
+        if self._drag is not None:
+            return
+        self._install_notes(self._notes)
+
+    def _query(self) -> str:
+        return self.search.get_text().strip()
+
+    def _filtered_notes(self, notes: Sequence[Note]) -> list[Note]:
+        """The deck narrowed by the search box, manual order preserved."""
+        query = self._query()
+        if not query:
+            return list(notes)
+        return search_notes(notes, query)
+
     def _install_notes(self, notes: Sequence[Note]) -> None:
+        self._clear_drag_ghost()
         self.hide_peek()
         self._tabs.clear()
         self._tab_order.clear()
+        # The hint must not promise dragging while the filter disables it.
+        filtered = bool(notes) and bool(self._query())
+        self.hint.set_text(
+            strings.FAN_HINT_FILTERED if filtered else strings.FAN_HINT
+        )
         while (child := self.rows.get_first_child()) is not None:
             self.rows.remove(child)
 
+        visible = self._filtered_notes(notes)
         if not notes:
+            # An empty deck gets an action, not just a label: the header "+"
+            # is small and the user is looking at an empty list.
             empty = Gtk.Label(label=strings.NO_NOTES)
             empty.set_xalign(0)
             empty.add_css_class("empty")
             self.rows.append(empty)
+            button = Gtk.Button(label=strings.EMPTY_NEW_NOTE)
+            button.add_css_class("empty-new")
+            button.set_halign(Gtk.Align.START)
+            button.set_margin_start(12)
+            button.set_margin_bottom(12)
+            button.connect("clicked", lambda _button: self._on_new())
+            self.rows.append(button)
+            self.empty_new_button = button
             return
+        if not visible:
+            empty = Gtk.Label(label=strings.NO_MATCH)
+            empty.set_xalign(0)
+            empty.add_css_class("empty")
+            self.rows.append(empty)
+            self.empty_new_button = None
+            return
+        self.empty_new_button = None
 
-        for note in notes:
+        # The grab cursor advertises reordering; while filtering, tabs are
+        # click-only, so they keep the default pointer.
+        draggable = not self._query()
+        for note in visible:
             button = Gtk.Button()
             button.add_css_class("tab")
             button.set_hexpand(True)
-            button.set_cursor(self._grab_cursor)
+            button.get_style_context().add_provider(
+                self._shift_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            )
+            if draggable:
+                button.set_cursor(self._grab_cursor)
             label = Gtk.Label(label=note.title())
             label.set_xalign(0)
             label.set_ellipsize(Pango.EllipsizeMode.END)
@@ -233,17 +334,32 @@ class FanPage(Gtk.Box):
         session = self._drag
         if session is None or self._drag_button is None:
             return
+        # Spec §6.2: reordering is disabled while the deck is filtered. The
+        # session stays an inactive click, so a short press still opens the
+        # tab, but crossing the threshold never lifts or reorders it.
+        if self._query():
+            return
         was_active = session.active
         if not session.update(dx, dy):
             return
         if not was_active:
             self._drag_button.add_css_class("dragging")
-            self._drag_button.set_cursor(self._grabbing_cursor)
+            # The pointer leaves the source row as the ghost follows it; all
+            # tabs show grabbing so the cursor does not flicker to grab.
+            for note_id in self._tab_order:
+                self._tabs[note_id].set_cursor(self._grabbing_cursor)
+            self._create_drag_ghost(self._drag_button)
+            self._start_shift_animation(session.source)
             if self._on_drag_begin is not None:
                 self._on_drag_begin(session.note_id)
-        target = target_index(self._release_y(dy), self._row_spans())
+        self._drag_dy = dy
+        self._move_drag_ghost(dy)
+        target = target_index(
+            self._release_y(dy), self._drag_spans or self._row_spans()
+        )
         if target != self._drag_target:
             self._drag_target = target
+            self._apply_shifts(session.source, target)
             if self._on_drag_update is not None:
                 self._on_drag_update()
 
@@ -266,19 +382,23 @@ class FanPage(Gtk.Box):
             released_inside=inside,
             released_on_tab=on_tab,
             pointer_y=release_y,
-            spans=self._row_spans(),
+            spans=self._drag_spans or self._row_spans(),
         )
-        self._finish_drag()
+        will_reorder = (
+            result.kind == REORDER
+            and result.target is not None
+            and result.target != result.source
+        )
+        # Keep the dragged tab translated over its gap until the idle rebuild
+        # installs the new order; clearing first would flash it back to the
+        # source slot for one frame.
+        self._finish_drag(keep_visuals=will_reorder)
         if self._on_drag_end is not None:
             self._on_drag_end()
         if result.kind == CLICK:
             # Leave the gesture's signal emission before any widget rebuild.
             GLib.idle_add(self._open_idle, result.note_id)
-        elif (
-            result.kind == REORDER
-            and result.target is not None
-            and result.target != result.source
-        ):
+        elif will_reorder:
             GLib.idle_add(self._reorder_idle, result.note_id, result.target)
 
     def _drag_cancel(self, _gesture: Gtk.GestureDrag, _sequence) -> None:
@@ -288,20 +408,107 @@ class FanPage(Gtk.Box):
         if self._on_drag_end is not None:
             self._on_drag_end()
 
-    def _finish_drag(self) -> None:
-        self._clear_drag_visuals()
+    def _finish_drag(self, *, keep_visuals: bool = False) -> None:
+        if keep_visuals:
+            # The ghost and the shifted rows stay on screen until the idle
+            # rebuild installs the new order; _install_notes drops the ghost.
+            self._drag_dy = 0.0
+        else:
+            self._clear_drag_visuals()
         self._drag = None
         self._drag_button = None
         self._drag_start = None
         self._drag_target = None
+        self._drag_spans = []
         if self._pending_notes is not None:
             notes, self._pending_notes = self._pending_notes, None
             GLib.idle_add(self._install_notes_idle, notes)
 
     def _clear_drag_visuals(self) -> None:
+        self._clear_drag_ghost()
         if self._drag_button is not None:
             self._drag_button.remove_css_class("dragging")
-            self._drag_button.set_cursor(self._grab_cursor)
+        idle_cursor = self._grab_cursor if not self._query() else None
+        for note_id in self._tab_order:
+            button = self._tabs.get(note_id)
+            if button is not None:
+                button.set_cursor(idle_cursor)
+                button.remove_css_class("shift-up")
+                button.remove_css_class("shift-down")
+                button.remove_css_class("drag-origin")
+        self._drag_dy = 0.0
+
+    def _clear_drag_ghost(self) -> None:
+        if self._drag_ghost is not None:
+            self.rows_overlay.remove_overlay(self._drag_ghost)
+            self._drag_ghost = None
+        if self._drag_button is not None:
+            self._drag_button.remove_css_class("drag-origin")
+
+    # -- reorder animation (spec §7.2) ---------------------------------
+
+    def _create_drag_ghost(self, source: Gtk.Button) -> None:
+        """A copy of the tab drawn in an overlay, above every row.
+
+        The real tab stays in place (hidden with ``drag-origin``) because it
+        owns the gesture; the ghost follows the pointer and can never be
+        painted under the rows it passes.
+        """
+        child = source.get_child()
+        text = child.get_text() if isinstance(child, Gtk.Label) else ""
+        ghost = Gtk.Button()
+        ghost.add_css_class("tab")
+        ghost.add_css_class("dragging")
+        ghost.add_css_class("drag-ghost")
+        ghost.set_can_target(False)
+        ghost.set_halign(Gtk.Align.START)
+        ghost.set_valign(Gtk.Align.START)
+        label = Gtk.Label(label=text)
+        label.set_xalign(0)
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        ghost.set_child(label)
+        ghost.set_size_request(source.get_width(), source.get_height())
+        self.rows_overlay.add_overlay(ghost)
+        self._drag_ghost = ghost
+        source.add_css_class("drag-origin")
+
+    def _move_drag_ghost(self, dy: float) -> None:
+        """Track the pointer in overlay coordinates (layout is untouched)."""
+        if self._drag_ghost is None or self._drag_button is None:
+            return
+        found, bounds = self._drag_button.compute_bounds(self.rows)
+        if not found:
+            return
+        self._drag_ghost.set_margin_start(round(bounds.get_x()))
+        self._drag_ghost.set_margin_top(round(bounds.get_y() + dy))
+
+    def _start_shift_animation(self, source: int) -> None:
+        """Size the gap from the real row height, then clear stale classes."""
+        spans = self._row_spans()
+        self._drag_spans = spans
+        if spans and source < len(spans):
+            gap = (spans[source][1] - spans[source][0]) + self.rows.get_spacing()
+            self._shift_provider.load_from_string(
+                f".tab.shift-up {{ transform: translate(0, {-gap:.0f}px); }} "
+                f".tab.shift-down {{ transform: translate(0, {gap:.0f}px); }}"
+            )
+        self._apply_shifts(source, None)
+
+    def _apply_shifts(self, source: int, target: int | None) -> None:
+        """Rows between the source and the target move aside for the gap."""
+        for index, note_id in enumerate(self._tab_order):
+            button = self._tabs[note_id]
+            direction = None
+            if target is not None:
+                if source < index <= target:
+                    direction = "shift-up"
+                elif target <= index < source:
+                    direction = "shift-down"
+            for css_class in ("shift-up", "shift-down"):
+                if css_class != direction:
+                    button.remove_css_class(css_class)
+            if direction is not None:
+                button.add_css_class(direction)
 
     def _open_idle(self, note_id: str) -> bool:
         self._on_open(note_id)
@@ -309,6 +516,9 @@ class FanPage(Gtk.Box):
 
     def _reorder_idle(self, note_id: str, target: int) -> bool:
         self._on_reorder(note_id, target)
+        # The successful path rebuilt the tabs (and dropped the ghost); this
+        # also covers a refused reorder so no stale overlay survives.
+        self._clear_drag_visuals()
         return False
 
     def _install_notes_idle(self, notes: Sequence[Note]) -> bool:
@@ -456,18 +666,17 @@ class FanPage(Gtk.Box):
         """Tab centres in *relative_to* (default: this page) for smoke clicks."""
         centers: list[list[float]] = []
         target = relative_to if relative_to is not None else self
-        child = self.rows.get_first_child()
-        while child is not None:
-            if isinstance(child, Gtk.Button):
-                found, bounds = child.compute_bounds(target)
-                if found:
-                    centers.append(
-                        [
-                            bounds.get_x() + bounds.get_width() / 2,
-                            bounds.get_y() + bounds.get_height() / 2,
-                        ]
-                    )
-            child = child.get_next_sibling()
+        # Iterate the tabs, not every button in the list: the empty deck's
+        # "New note" action is a button too and must not read as a tab.
+        for note_id in self._tab_order:
+            found, bounds = self._tabs[note_id].compute_bounds(target)
+            if found:
+                centers.append(
+                    [
+                        bounds.get_x() + bounds.get_width() / 2,
+                        bounds.get_y() + bounds.get_height() / 2,
+                    ]
+                )
         return centers
 
     def tab_center(
@@ -496,8 +705,16 @@ class FanPage(Gtk.Box):
     def new_button_center(self) -> list[float] | None:
         return self._center_of(self.new_button)
 
+    def empty_new_center(self) -> list[float] | None:
+        if self.empty_new_button is None:
+            return None
+        return self._center_of(self.empty_new_button)
+
     def collapse_button_center(self) -> list[float] | None:
-        return self._center_of(self.close_button)
+        return self._center_of(self.collapse_button)
+
+    def quit_button_center(self) -> list[float] | None:
+        return self._center_of(self.quit_button)
 
     def scroll_value(self) -> float:
         return self.scroller.get_vadjustment().get_value()
@@ -513,14 +730,54 @@ class FanPage(Gtk.Box):
             self._on_open(note_id)
 
     def activate_collapse(self) -> None:
-        self.close_button.emit("clicked")
+        self.collapse_button.emit("clicked")
+
+    def activate_new(self) -> None:
+        # Prefer the empty deck's CTA when it is on screen: that is the
+        # control a test is exercising, not the header "+".
+        button = self.empty_new_button or self.new_button
+        button.emit("clicked")
+
+    # -- search --------------------------------------------------------
+
+    def search_text(self) -> str:
+        return self.search.get_text()
+
+    def search_focused(self) -> bool:
+        # ``has_focus`` is false for the entry itself: GtkSearchEntry delegates
+        # the caret to an internal GtkText, which is the widget with focus.
+        root = self.get_root()
+        focused = root.get_focus() if root is not None else None
+        if focused is None:
+            return False
+        return focused is self.search or focused.is_ancestor(self.search)
+
+    def search_center(
+        self, relative_to: Gtk.Widget | None = None
+    ) -> list[float] | None:
+        found, bounds = self.search.compute_bounds(relative_to or self)
+        if not found:
+            return None
+        return [
+            bounds.get_x() + bounds.get_width() / 2,
+            bounds.get_y() + bounds.get_height() / 2,
+        ]
+
+    def focus_search(self) -> None:
+        self.search.grab_focus()
+        self.search.set_position(-1)
+
+    def reset_search(self) -> None:
+        """Clear the query so a collapsed deck reopens unfiltered."""
+        if self.search.get_text():
+            self.search.set_text("")
 
     # -- drag state / smoke hooks --------------------------------------
 
     def drag_snapshot(self) -> dict:
         """Observable drag state for the test dump and ticket 10.
 
-        ``raised`` is the CSS class that lifts the tab (spec §6.5) and
+        ``raised`` is the CSS class that lifts the tab (spec §6.4) and
         ``cursor`` is read back from the widget, so a smoke test proves both
         the style and the ``grab`` -> ``grabbing`` swap, not just intent.
         """
@@ -541,6 +798,26 @@ class FanPage(Gtk.Box):
                 active and button is not None and button.has_css_class("dragging")
             ),
             "cursor": cursor if active else None,
+            "reorder_enabled": not bool(self._query()),
+            "translating": self._drag_ghost is not None,
+            "origin_hidden": bool(
+                button is not None and button.has_css_class("drag-origin")
+            ),
+            "translate": round(self._drag_dy) if active else 0,
+            "shifted_up": [
+                note_id
+                for note_id in self._tab_order
+                if self._tabs[note_id].has_css_class("shift-up")
+            ]
+            if active
+            else [],
+            "shifted_down": [
+                note_id
+                for note_id in self._tab_order
+                if self._tabs[note_id].has_css_class("shift-down")
+            ]
+            if active
+            else [],
         }
 
     def tab_ids(self) -> list[str]:

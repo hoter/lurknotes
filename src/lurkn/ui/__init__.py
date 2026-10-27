@@ -1,4 +1,4 @@
-"""Dark theme, loaded before any window is mapped (spec §6.5)."""
+"""Dark theme, loaded before any window is mapped (spec §6.4)."""
 
 from __future__ import annotations
 

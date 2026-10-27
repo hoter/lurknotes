@@ -25,9 +25,6 @@ instance and use these hooks only to observe or drive the real widgets.
     fan itself even when the shared pointer moves elsewhere.
 ``LURKNOTES_TEST_UNDO_MS``
     Shorten the 10 s undo window. Production always uses ``UNDO_TIMEOUT_MS``.
-
-``LURKNOTES_TEST_OPEN_ALL`` was removed: smokes open All Notes through the real
-``lurknotes all`` command instead of a second startup path.
 """
 
 from __future__ import annotations
@@ -106,13 +103,25 @@ class TestHooks:
             "new_button_center": (
                 app.panel.new_button_center() if is_fan else None
             ),
+            "empty_new_center": (
+                app.panel.empty_new_center() if is_fan else None
+            ),
             "collapse_button_center": (
                 app.panel.collapse_button_center() if is_fan else None
             ),
+            "quit_button_center": (
+                app.panel.quit_button_center() if is_fan else None
+            ),
+            "search_text": app.panel.search_text(),
+            "search_focused": app.panel.search_focused(),
+            "search_center": app.panel.search_center() if is_fan else None,
             "scroll_value": app.panel.scroll_value(),
             "peek": peek,
             "rail_centers": app.panel.rail_centers() if is_open else [],
             "rail_titles": app.panel.rail_titles() if is_open else [],
+            "note_delete_center": (
+                app.panel.note_delete_center() if is_open else None
+            ),
             "active_index": app.panel.active_index() if is_open else -1,
             "text": app.panel.note.text() if is_open else None,
             "cursor_offset": (
@@ -127,9 +136,6 @@ class TestHooks:
             "overwrite_blocked": app.overwrite_blocked,
             "unsaved": app.unsaved,
             "status": app.panel.status_snapshot(),
-            "all_notes": (
-                app.all_notes.snapshot() if app.all_notes is not None else None
-            ),
             "toast": app.panel.toast_snapshot(),
             "undo_pending": app._undo.pending is not None,
             "panel_focused": app._panel_has_focus(),
@@ -176,6 +182,9 @@ class TestHooks:
         elif command == "header":
             if app.panel is not None:
                 app.panel.activate_collapse()
+        elif command == "new":
+            if app.panel is not None:
+                app.panel.activate_new()
         elif command.startswith("tabclick:"):
             if app.panel is not None:
                 app.panel.activate_tab(command[9:])

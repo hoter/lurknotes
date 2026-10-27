@@ -10,7 +10,7 @@ The run proves, against isolated XDG directories and a unique application id:
   ``grab`` -> ``grabbing``, and the dump exposes the target row mid-gesture;
 * the deck stays mapped when the pointer leaves it mid-drag for >400 ms;
 * the order changes only on release, is written at once and matches in the
-  fan, the panel rail, All Notes and after a restart;
+  fan, the panel rail and after a restart;
 * releasing outside the deck cancels the reorder and leaves the file alone;
 * the wheel and the in-fan peek still work after the gesture was introduced.
 
@@ -40,7 +40,6 @@ sys.path.insert(0, str(ROOT / "src"))
 import harness as h  # noqa: E402
 import smoke_note as base  # noqa: E402
 from lurkn.strings import (  # noqa: E402
-    ALL_NOTES_TITLE,
     FAN_TITLE,
     NOTE_TITLE,
     STRIP_TITLE,
@@ -75,22 +74,6 @@ def start_app(
         extra={"LURKNOTES_TEST_CONTROL": "1"},
     )
     return h.launch(["--autostart"], env)
-
-
-def open_all_via_command(app: subprocess.Popen[str]) -> None:
-    """Open All Notes through the real single-instance ``all`` command."""
-    result = subprocess.run(
-        [str(ROOT / "lurknotes"), "all"],
-        cwd=str(ROOT),
-        env=app.lurk_env,  # type: ignore[attr-defined]
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise SmokeFailure(
-            f"lurknotes all failed ({result.returncode}): {result.stderr.strip()}"
-        )
 
 
 def seed_notes(data_home: Path) -> Path:
@@ -400,6 +383,29 @@ def scenario_reorder_and_state(
             continue
         if aimed.get("state") != "fan":
             raise SmokeFailure("the deck did not stay in the fan while aiming")
+        drag = aimed.get("drag") or {}
+        if not drag.get("translating") or not drag.get("origin_hidden"):
+            raise SmokeFailure(
+                "the drag has no floating copy above the rows: "
+                f"{drag!r}"
+            )
+        if drag.get("translate", 0) <= 0:
+            raise SmokeFailure(
+                f"the dragged tab did not follow the pointer: {drag!r}"
+            )
+        if drag.get("shifted_up") != ids[1:3]:
+            raise SmokeFailure(
+                "the rows between source and target did not make room: "
+                f"{drag.get('shifted_up')!r}"
+            )
+        if drag.get("shifted_down"):
+            raise SmokeFailure(
+                f"rows above the drag were shifted: {drag['shifted_down']!r}"
+            )
+        print(
+            "smoke-drag: the ghost follows the pointer and the rows between "
+            "source and target shifted to make room"
+        )
         if not button1_down(xtest):
             print(
                 f"smoke-drag: attempt {attempt}: a foreign button release fired "
@@ -413,8 +419,7 @@ def scenario_reorder_and_state(
                 dump,
                 app,
                 lambda snap: snap.get("ids") == expected
-                and (snap.get("drag") or {}).get("active") is False
-                and (snap.get("all_notes") or {}).get("ids") == expected,
+                and (snap.get("drag") or {}).get("active") is False,
                 timeout=3.0,
             )
         except SmokeFailure:
@@ -429,11 +434,14 @@ def scenario_reorder_and_state(
                 f"the reorder also opened a note (state {reordered.get('state')!r}); "
                 "the gesture must not fire a click as well"
             )
-        all_notes = reordered.get("all_notes") or {}
-        if all_notes.get("titles") != expected_titles:
-            raise SmokeFailure(
-                f"All Notes did not update live: {all_notes.get('titles')!r}"
-            )
+        after = reordered.get("drag") or {}
+        if (
+            after.get("translating")
+            or after.get("translate")
+            or after.get("shifted_up")
+            or after.get("shifted_down")
+        ):
+            raise SmokeFailure(f"drag animation survived the drop: {after!r}")
         if reordered.get("tab_titles") != expected_titles:
             raise SmokeFailure(
                 f"the fan shows {reordered.get('tab_titles')!r}, "
@@ -705,7 +713,7 @@ def scenario_peek_and_wheel(
     print("smoke-drag: the wheel still scrolls the fan and tabs keep their heights")
 
 
-def scenario_restart_and_all_notes(
+def scenario_restart(
     data_home: Path,
     dump: Path,
     xtest: base.XTest,
@@ -715,21 +723,16 @@ def scenario_restart_and_all_notes(
     app = start_app(data_home, dump)
     try:
         base._wait_for_window(STRIP_TITLE, app)
-        open_all_via_command(app)
         restarted = snapshot(
             dump,
             app,
             lambda snap: snap.get("ids") == expected
-            and (snap.get("all_notes") or {}).get("ids") == expected,
+            and snap.get("titles") == expected_titles,
             timeout=8.0,
         )
-        all_notes = restarted["all_notes"]
-        if all_notes.get("titles") != expected_titles:
-            raise SmokeFailure(
-                f"All Notes shows {all_notes.get('titles')!r}, "
-                f"expected {expected_titles!r}"
-            )
-        print("smoke-drag: after restart notes.json, the deck and All Notes share the new order")
+        if restarted.get("ids") != expected:
+            raise SmokeFailure("after restart the deck order changed")
+        print("smoke-drag: after restart notes.json and the deck share the new order")
 
         fan = open_fan(app, xtest)
         ready = snapshot(
@@ -758,12 +761,10 @@ def scenario_restart_and_all_notes(
             raise SmokeFailure(
                 f"the restarted rail shows {opened.get('rail_titles')!r}"
             )
-        if (opened.get("all_notes") or {}).get("ids") != expected:
-            raise SmokeFailure("All Notes changed order when the note opened")
-        print("smoke-drag: the restarted fan, rail and All Notes all match")
+        print("smoke-drag: the restarted fan and rail both match the file")
     finally:
         base._stop(app)
-    base._wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE, ALL_NOTES_TITLE), app)
+    base._wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE), app)
 
 
 def main() -> int:
@@ -780,16 +781,6 @@ def main() -> int:
             app = start_app(data_home, dump)
             base._wait_for_window(STRIP_TITLE, app)
             snapshot(dump, app, lambda snap: snap.get("state") == "strip", timeout=4.0)
-            # All Notes is opened by the real command, not a test hook, so the
-            # live deck_changed() call after a reorder can be checked without
-            # a reopen.
-            open_all_via_command(app)
-            snapshot(
-                dump,
-                app,
-                lambda snap: bool((snap.get("all_notes") or {}).get("ids")),
-                timeout=5.0,
-            )
             # The click half of the gesture is proven first, while our window is
             # most likely to own the edge before another agent maps its deck.
             scenario_short_click(app, dump, xtest)
@@ -800,12 +791,10 @@ def main() -> int:
             scenario_peek_and_wheel(app, dump, xtest, expected)
 
             base._stop(app)
-            base._wait_for_no_windows(
-                (STRIP_TITLE, FAN_TITLE, NOTE_TITLE, ALL_NOTES_TITLE), app
-            )
+            base._wait_for_no_windows((STRIP_TITLE, FAN_TITLE, NOTE_TITLE), app)
             app = None
 
-            scenario_restart_and_all_notes(
+            scenario_restart(
                 data_home, dump, xtest, expected, expected_titles
             )
         print("smoke-drag: OK")

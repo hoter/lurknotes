@@ -52,36 +52,6 @@ def _edge_rect(workarea: Rect, scale: float, width: int, gap: int) -> Rect:
     )
 
 
-def centered_position(
-    workarea: Rect,
-    scale: float,
-    width: int,
-    height: int,
-    frame_extents: tuple[int, int, int, int] = (0, 0, 0, 0),
-) -> tuple[int, int]:
-    """The X11 client origin that centres a ``width x height`` visible window.
-
-    ``workarea`` and the window size are logical; the result is physical for
-    ``XMoveWindow``. GTK draws client-side-decorations shadows *outside* the
-    visible window, so ``frame_extents`` (left, right, top, bottom, physical)
-    must be subtracted to centre the part the user sees.
-    """
-    left, _right, top, _bottom = frame_extents
-    visible_width = round(width * scale)
-    visible_height = round(height * scale)
-    x = (
-        round(workarea.x * scale)
-        + (round(workarea.width * scale) - visible_width) // 2
-        - left
-    )
-    y = (
-        round(workarea.y * scale)
-        + (round(workarea.height * scale) - visible_height) // 2
-        - top
-    )
-    return x, y
-
-
 class _ClientMessage(ctypes.Structure):
     _fields_ = [
         ("type", ctypes.c_int),

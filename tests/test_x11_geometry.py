@@ -1,6 +1,6 @@
 """Geometry math for placing the strip in X11 physical pixels."""
 
-from lurkn.x11 import Rect, centered_position, panel_rect, strip_rect
+from lurkn.x11 import Rect, panel_rect, strip_rect
 
 
 def test_strip_size_scales_to_physical_pixels():
@@ -58,44 +58,3 @@ def test_panel_geometry_at_scale_one():
     panel = panel_rect(workarea, scale=1, width=380, strip_width=10)
 
     assert panel == Rect(x=1050, y=32, width=380, height=928)
-
-
-def test_centered_window_sits_in_the_middle_of_the_workarea():
-    # All Notes is 720 x 560 logical (spec §6). At scale 2 the visible size
-    # is 1440 x 1120; GTK's shadow extents are outside the visible window, so
-    # the X11 client origin moves left/up by them.
-    workarea = Rect(66, 32, 1374, 928)
-
-    position = centered_position(
-        workarea,
-        scale=2,
-        width=720,
-        height=560,
-        frame_extents=(28, 28, 24, 34),
-    )
-
-    assert position == (758, 408)
-
-
-def test_centered_window_without_frame_extents_is_flush_with_the_visible_rect():
-    workarea = Rect(66, 32, 1374, 928)
-
-    position = centered_position(workarea, scale=2, width=720, height=560)
-
-    assert position == (786, 432)
-
-
-def test_centered_window_at_scale_one():
-    workarea = Rect(0, 32, 1440, 928)
-
-    position = centered_position(workarea, scale=1, width=720, height=560)
-
-    assert position == (360, 216)
-
-
-def test_centered_window_at_fractional_scale():
-    workarea = Rect(0, 32, 1280, 800)
-
-    position = centered_position(workarea, scale=1.5, width=720, height=560)
-
-    assert position == (420, 228)

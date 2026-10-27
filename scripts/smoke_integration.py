@@ -5,19 +5,17 @@ Runs, each with isolated XDG dirs and a unique application id:
 
 1. cold ``new`` creates and opens a note; a warm second process delivers
    ``new`` synchronously and reuses the untouched note; only the primary
-   process exists; a warm ``all`` maps All Notes, a WM close hides it and a
-   second ``all`` raises the same window.
-2. cold ``all`` opens All Notes with no prior instance.
-3. bare ``lurknotes`` maps the fan immediately with the pointer far from the
+   process exists.
+2. bare ``lurknotes`` maps the fan immediately with the pointer far from the
    deck, so the hover timer cannot be the cause.
-4. ``--autostart`` maps only the strip, steals no focus, writes no notes, and
+3. ``--autostart`` maps only the strip, steals no focus, writes no notes, and
    a second ``--autostart`` process exits without starting another app.
-5. a refused activation (simulated) shows "Click to type"; the first click
+4. a refused activation (simulated) shows "Click to type"; the first click
    sets WM_HINTS input, focuses the editor, hides the hint, and typing lands.
-6. onboarding is shown on the first visible deck and not after a restart.
-7. ``--install-autostart`` writes the expected file into a temp XDG config.
-8. ticket 08 gates: ``new`` on read-only and overwrite-blocked decks shows the
-   status banner instead of silently doing nothing; ``all`` still works.
+5. onboarding is shown on the first visible deck and not after a restart.
+6. ``--install-autostart`` writes the expected file into a temp XDG config.
+7. ticket 08 gates: ``new`` on read-only and overwrite-blocked decks shows the
+   status banner instead of silently doing nothing.
 
 Exits 0 on success, 1 with a message otherwise. Always stops the processes it
 starts and only touches windows whose ``_NET_WM_PID`` is its own primary.
@@ -42,7 +40,6 @@ sys.path.insert(0, str(ROOT / "src"))
 import smoke_note as base  # noqa: E402
 
 from lurkn.strings import (  # noqa: E402
-    ALL_NOTES_TITLE,
     FAN_TITLE,
     NOTE_TITLE,
     STRIP_TITLE,
@@ -197,7 +194,6 @@ def run_commands(root: Path) -> None:
     dump = data / "dump.json"
     env = env_for(data, value, dump)
     primary: subprocess.Popen[str] | None = None
-    xtest: base.XTest | None = None
     try:
         primary = start(["new"], env)
         base._wait_for_window(STRIP_TITLE, primary)
@@ -230,82 +226,12 @@ def run_commands(root: Path) -> None:
             f"({elapsed * 1000:.0f} ms, rc {rc}), one process only"
         )
 
-        rc, elapsed, _ = run_second(["all"], env)
-        mapped = wait_dump(
-            dump,
-            primary,
-            lambda d: (d.get("all_notes") or {}).get("mapped") is True,
-            timeout=3.0,
-        )
-        all_notes = base._wait_for_window(ALL_NOTES_TITLE, primary)
-        if base._window_info(all_notes).get("map_state") != "IsViewable":
-            raise SmokeFailure("All Notes is not viewable after warm `all`")
-        assert_only_primary(primary, value)
-        print(
-            "smoke-integration: warm `all` opened All Notes "
-            f"({elapsed * 1000:.0f} ms, rc {rc})"
-        )
-
-        xtest = base.XTest()
-        xtest.close_window(all_notes)
-        wait_dump(
-            dump,
-            primary,
-            lambda d: (d.get("all_notes") or {}).get("visible") is False,
-            timeout=2.0,
-        )
-        if base._window_info(all_notes).get("map_state") == "IsViewable":
-            raise SmokeFailure("All Notes stayed mapped after a WM close")
-        base._ensure_running(primary)
-
-        run_second(["all"], env)
-        raised = wait_dump(
-            dump,
-            primary,
-            lambda d: (d.get("all_notes") or {}).get("mapped") is True,
-            timeout=3.0,
-        )
-        if base._wait_for_window(ALL_NOTES_TITLE, primary) != all_notes:
-            raise SmokeFailure("a second `all` created a new All Notes window")
-        if raised["all_notes"].get("width") != 720:
-            raise SmokeFailure("raised All Notes has the wrong width")
-        print("smoke-integration: `all` raised the existing All Notes window")
-    finally:
-        if xtest is not None:
-            xtest.restore()
-            xtest.close()
-        if primary is not None:
-            base._stop(primary)
-
-
-# -- 2. cold all ---------------------------------------------------------
-
-
-def run_cold_all(root: Path) -> None:
-    value = app_id("coldall")
-    base._assert_app_id_free(value)
-    data = root / "coldall"
-    dump = data / "dump.json"
-    env = env_for(data, value, dump)
-    primary: subprocess.Popen[str] | None = None
-    try:
-        primary = start(["all"], env)
-        base._wait_for_window(STRIP_TITLE, primary)
-        wait_dump(
-            dump,
-            primary,
-            lambda d: (d.get("all_notes") or {}).get("mapped") is True,
-        )
-        window = base._wait_for_window(ALL_NOTES_TITLE, primary)
-        if base._window_info(window).get("map_state") != "IsViewable":
-            raise SmokeFailure("cold `all` left All Notes unmapped")
-        print("smoke-integration: cold `all` opened All Notes")
     finally:
         if primary is not None:
             base._stop(primary)
 
 
-# -- 3. bare invocation expands the fan immediately ---------------------
+# -- 2. bare invocation expands the fan immediately ---------------------
 
 
 def run_bare_expand(root: Path) -> None:
@@ -349,7 +275,7 @@ def run_bare_expand(root: Path) -> None:
             base._stop(primary)
 
 
-# -- 4. autostart --------------------------------------------------------
+# -- 3. autostart --------------------------------------------------------
 
 
 def run_autostart(root: Path) -> None:
@@ -407,7 +333,7 @@ def run_autostart(root: Path) -> None:
             base._stop(primary)
 
 
-# -- 5. refused focus ----------------------------------------------------
+# -- 4. refused focus ----------------------------------------------------
 
 
 def run_refused_focus(root: Path) -> None:
@@ -476,7 +402,7 @@ def run_refused_focus(root: Path) -> None:
             base._stop(primary)
 
 
-# -- 6. onboarding once --------------------------------------------------
+# -- 5. onboarding once --------------------------------------------------
 
 
 def run_onboarding_once(root: Path) -> None:
@@ -498,8 +424,8 @@ def run_onboarding_once(root: Path) -> None:
             and (d.get("onboarding") or {}).get("visible") is True,
         )
         text = shown["onboarding"].get("text") or ""
-        if "Ctrl+Alt+N" not in text or "Ctrl+Alt+A" not in text:
-            raise SmokeFailure(f"onboarding text is missing the hotkeys: {text!r}")
+        if "Ctrl+Alt+N" not in text:
+            raise SmokeFailure(f"onboarding text is missing the hotkey: {text!r}")
         if not marker.is_file():
             raise SmokeFailure("the onboarded marker was not created when shown")
         print("smoke-integration: first launch showed the hotkey onboarding")
@@ -519,9 +445,9 @@ def run_onboarding_once(root: Path) -> None:
             raise SmokeFailure("onboarding appeared again after a restart")
         print("smoke-integration: onboarding stayed hidden after restart")
 
-        # The hinted commands really are what the desktop entry/hotkeys run.
-        if "lurknotes new" not in text or "lurknotes all" not in text:
-            raise SmokeFailure("onboarding does not name the CLI commands")
+        # The hinted command really is what the desktop entry/hotkey runs.
+        if "lurknotes new" not in text:
+            raise SmokeFailure("onboarding does not name the CLI command")
     finally:
         if first is not None:
             base._stop(first)
@@ -529,7 +455,7 @@ def run_onboarding_once(root: Path) -> None:
             base._stop(second)
 
 
-# -- 7. install autostart ------------------------------------------------
+# -- 6. install autostart ------------------------------------------------
 
 
 def run_install_autostart(root: Path) -> None:
@@ -583,7 +509,7 @@ def run_install_autostart(root: Path) -> None:
     print(f"smoke-integration: --install-autostart wrote {target}")
 
 
-# -- 8. ticket 08 gates --------------------------------------------------
+# -- 7. ticket 08 gates --------------------------------------------------
 
 
 def run_storage_gates(root: Path) -> None:
@@ -624,14 +550,6 @@ def run_storage_gates(root: Path) -> None:
         if not gate["status"].get("message"):
             raise SmokeFailure("read-only new showed an empty status banner")
         print("smoke-integration: read-only `new` surfaced the status banner")
-
-        run_second(["all"], env)
-        wait_dump(
-            dump,
-            primary,
-            lambda d: (d.get("all_notes") or {}).get("mapped") is True,
-        )
-        print("smoke-integration: `all` works on a read-only deck")
     finally:
         if primary is not None:
             base._stop(primary)
@@ -663,12 +581,6 @@ def run_storage_gates(root: Path) -> None:
             "smoke-integration: overwrite-blocked `new` surfaced the banner "
             "and left the file byte-identical"
         )
-        run_second(["all"], env)
-        wait_dump(
-            dump,
-            primary,
-            lambda d: (d.get("all_notes") or {}).get("mapped") is True,
-        )
     finally:
         if primary is not None:
             base._stop(primary)
@@ -683,7 +595,6 @@ def main() -> int:
         ) as temporary:
             root = Path(temporary)
             run_commands(root)
-            run_cold_all(root)
             run_bare_expand(root)
             run_autostart(root)
             run_refused_focus(root)

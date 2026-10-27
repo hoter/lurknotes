@@ -28,6 +28,7 @@ class NotePage(Gtk.Box):
         on_close: Callable[[], None],
         on_open: Callable[[str], None],
         on_changed: Callable[[], None],
+        on_delete: Callable[[], bool],
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self._on_open = on_open
@@ -41,13 +42,31 @@ class NotePage(Gtk.Box):
         rail.set_vexpand(True)
         self.rail = rail
 
-        close = Gtk.Button(label=strings.CLOSE)
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        actions.set_halign(Gtk.Align.START)
+        actions.set_margin_start(6)
+        actions.set_margin_end(6)
+
+        # Collapse, not "×": the note closes back into the fan, while "×" in
+        # the fan header is the one control that quits the app.
+        close = Gtk.Button(label=strings.COLLAPSE)
+        close.add_css_class("rail-action")
         close.set_tooltip_text(strings.CLOSE_NOTE)
-        close.set_halign(Gtk.Align.START)
-        close.set_margin_start(6)
-        close.set_margin_end(6)
         close.connect("clicked", lambda _button: on_close())
-        rail.append(close)
+        actions.append(close)
+        self.close_button = close
+
+        # Deletion is one click away instead of keyboard-only; the app's same
+        # handler writes at once and raises the undo toast (spec §4.5).
+        delete = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+        delete.add_css_class("rail-action")
+        delete.add_css_class("note-delete")
+        delete.set_tooltip_text(strings.DELETE_NOTE)
+        delete.connect("clicked", lambda _button: on_delete())
+        actions.append(delete)
+        self.delete_button = delete
+
+        rail.append(actions)
 
         self.rail_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self.rail_rows.set_margin_start(6)
@@ -136,6 +155,17 @@ class NotePage(Gtk.Box):
 
     def rail_width(self) -> int:
         return self.rail.get_width()
+
+    def delete_button_center(
+        self, relative_to: Gtk.Widget | None = None
+    ) -> list[float] | None:
+        found, bounds = self.delete_button.compute_bounds(relative_to or self)
+        if not found:
+            return None
+        return [
+            bounds.get_x() + bounds.get_width() / 2,
+            bounds.get_y() + bounds.get_height() / 2,
+        ]
 
     def rail_centers(self) -> list[list[float]]:
         """Note-tab centres in panel coordinates; used by the smoke test."""

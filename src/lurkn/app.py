@@ -7,9 +7,8 @@ windows, outside the dock and on every workspace (spec §9.1).
 The deck state machine is explicit: ``strip`` -> ``fan`` -> ``open``, with
 peek as a read-only pane inside the fan. The pure machine (hover
 delays, peek, collapse) lives in :mod:`lurkn.deck`; this module maps its states
-onto GTK widgets and X11 hints, and owns the All Notes window. The one-slot
-memory undo behind Ctrl+Backspace lives in :mod:`lurkn.undo`; drag reorder
-belongs to ticket 06.
+onto GTK widgets and X11 hints. The one-slot memory undo behind Ctrl+Backspace
+lives in :mod:`lurkn.undo`; drag reorder belongs to ticket 06.
 
 ``LURKNOTES_APP_ID``
     Override the D-Bus application id. Smoke tests use a unique id so a
@@ -46,7 +45,6 @@ from .deck import (
     STATE_STRIP,
     DeckMachine,
 )
-from .events import DeckChanged
 from .focus import FocusGuard
 from .notes import (
     Note,
@@ -70,7 +68,6 @@ from .store import (
 from .testhooks import TestHooks
 from .ui import install as install_theme
 from .undo import DeletedNote, UndoController
-from .windows.all_notes import AllNotesWindow, center_in_workarea
 from .windows.panel import WIDTH as PANEL_WIDTH
 from .windows.panel import PanelWindow
 from .windows.placement import Placement, logical_workarea
@@ -122,13 +119,6 @@ class LurkNotesApp(Gtk.Application):
         self._load_error: str | None = None
         self.strip: StripWindow | None = None
         self.panel: PanelWindow | None = None
-        self.all_notes: AllNotesWindow | None = None
-        self._all_notes_placed = False
-        self._all_notes_place_tries = 0
-        # Ticket 07: read-only views (All Notes) subscribe here instead of
-        # polling. Every mutation path calls ``deck_changed()``; ticket 06
-        # (reorder) must do the same when it lands.
-        self.deck_changed_event = DeckChanged()
         self._workarea: Rect | None = None
         self._retrier = Retrier(
             self._retry_save,
@@ -146,7 +136,6 @@ class LurkNotesApp(Gtk.Application):
         # Ticket 09: first-launch onboarding and the 150 ms focus decision.
         self._onboarding_pending = needs_onboarding()
         self._focus_guard: FocusGuard | None = None
-        self._all_notes_focus_guard: FocusGuard | None = None
 
     @property
     def state(self) -> str:
@@ -190,8 +179,8 @@ class LurkNotesApp(Gtk.Application):
         display = Gdk.Display.get_default()
         if display is not None:
             install_theme(display)
-        # Spec §5.2 saves on exit; Ctrl+Q and the All Notes quit item (ticket
-        # 07) both go through this action, so the shutdown cleanup runs too.
+        # Spec §5.2 saves on exit; Ctrl+Q and the fan's quit button both go
+        # through this action, so the shutdown cleanup runs too.
         quit_action = Gio.SimpleAction.new("quit", None)
         quit_action.connect("activate", self._on_quit)
         self.add_action(quit_action)
@@ -249,8 +238,6 @@ class LurkNotesApp(Gtk.Application):
         self._last_command = command.action or "expand"
         if command.action == "new":
             self.command_new()
-        elif command.action == "all":
-            self.command_all()
         else:
             self.expand_deck()
 
@@ -270,10 +257,6 @@ class LurkNotesApp(Gtk.Application):
         panel_guard = getattr(self, "_focus_guard", None)
         if panel_guard is not None:
             panel_guard.clear()
-        all_notes_guard = getattr(self, "_all_notes_focus_guard", None)
-        if all_notes_guard is not None:
-            all_notes_guard.clear()
-        self.deck_changed_event.clear()
         self._retrier.stop()
         if self.x11 is not None:
             self.x11.close()
@@ -401,6 +384,9 @@ class LurkNotesApp(Gtk.Application):
             on_escape=self.on_escape,
             on_changed=self.on_text_changed,
             on_collapse=self.collapse_deck,
+            on_quit=self._on_quit,
+            on_search_focus=self._grant_search_focus,
+            on_search_changed=lambda: self._hooks.schedule_dump(delay=30),
             on_hover_tab=self._on_tab_enter,
             on_leave_tab=self._on_tab_leave,
             on_scrolled=lambda: self._hooks.schedule_dump(delay=30),
@@ -469,6 +455,19 @@ class LurkNotesApp(Gtk.Application):
     def _on_deck_leave(self) -> None:
         if self._hooks.pin_deck:
             return
+        # The strip and the panel are separate X windows. Crossing from one
+        # into the other can deliver the enter of the new window *before* the
+        # leave of the old one; treating that leave as "the pointer is gone"
+        # schedules a collapse that nothing cancels, so the fan folds by
+        # itself ~400 ms after the pointer moved onto it. Ask the server where
+        # the pointer really is and cancel instead.
+        #
+        # Only while the fan is up: collapsing unmaps the panel with the
+        # pointer still over its old rect, and that leave must stay a leave
+        # (re-entering there would schedule an unwanted 120 ms re-expand).
+        if self.state == STATE_FAN and self._pointer_over_deck():
+            self.deck.hover_enter()
+            return
         # Ticket 05: while an undo is available, unmapping the fan would take
         # the toast and its Undo button with it. Hide the peek, stay mapped.
         self.deck.hover_leave(allow_collapse=self._undo.pending is None)
@@ -508,94 +507,12 @@ class LurkNotesApp(Gtk.Application):
             self.deck.hover_leave(allow_collapse=self._undo.pending is None)
         self._hooks.schedule_dump(delay=20)
 
-    def show_all_notes(self) -> None:
-        """Show (or raise) the All Notes window; ticket 09's ``all`` uses this."""
-        if self.strip is None:
-            self._build_deck()
-        if self.all_notes is None:
-            self.all_notes = AllNotesWindow(
-                self,
-                notes_provider=self.notes_for_view,
-                on_open=self.open_note,
-                events=self.deck_changed_event,
-                on_refresh=lambda: self._hooks.schedule_dump(delay=80),
-            )
-            self.all_notes.connect("map", self._on_all_notes_map)
-        self.all_notes.refresh()
-        self.all_notes.present()
-        self.all_notes.focus_search()
-        self._watch_all_notes_focus()
-        self._hooks.schedule_dump(delay=100)
-
-    def _on_all_notes_map(self, *_args) -> None:
-        # GNOME places a plain X11 window at the workarea corner. Spec §6 says
-        # All Notes opens centred; wait for GTK's shadow extents, then move it.
-        if not self._all_notes_placed:
-            # Centre immediately with the extents known at map time; a later
-            # pass corrects for CSD shadows once GTK publishes them.
-            self._place_all_notes()
-            GLib.timeout_add(50, self._place_all_notes)
-
-    def _place_all_notes(self) -> bool:
-        if (
-            self.all_notes is None
-            or self.x11 is None
-            or self._workarea is None
-        ):
-            return False
-        extents_known = center_in_workarea(
-            self.all_notes, self.x11, self._workarea
-        )
-        if extents_known is None:
-            return False
-        if not extents_known and self._all_notes_place_tries < 5:
-            # GTK may set _GTK_FRAME_EXTENTS a frame after the map; correct
-            # the centre when it does. The first pass already put the window
-            # at the workarea centre, so the smoke never sees the WM default.
-            self._all_notes_place_tries += 1
-            GLib.timeout_add(50, self._place_all_notes)
-        else:
-            self._all_notes_placed = True
-        return False
-
-    def notes_for_view(self) -> list[Note]:
-        """The deck as read-only views must see it (All Notes, spec §4.3).
-
-        The open note's text comes straight from the editor buffer, so what is
-        being typed appears in All Notes before the 400 ms autosave runs. All
-        other notes are the app's own objects; views never mutate them.
-        """
-        live_id = (
-            self.current_id
-            if self.state == STATE_OPEN and self.panel is not None
-            else None
-        )
-        if live_id is None:
-            return list(self.notes)
-        live_text = self.panel.note.text()
-        now = time.time()
-        snapshot: list[Note] = []
-        for note in self.notes:
-            if note.id == live_id and live_text != note.text:
-                snapshot.append(
-                    Note(
-                        id=note.id,
-                        text=live_text,
-                        created=note.created,
-                        updated=now,
-                    )
-                )
-            else:
-                snapshot.append(note)
-        return snapshot
-
     def deck_changed(self) -> None:
-        """Tell read-only views that the deck changed.
+        """Refresh the smoke dump after a mutation.
 
         Called from every mutation path in this module (text, create, delete,
-        undo, reorder) so All Notes stays in sync without a reopen.
+        undo, reorder) so the test snapshot never lags the deck.
         """
-        self.deck_changed_event.notify()
         self._hooks.schedule_dump(delay=100)
 
     def reorder_note(self, note_id: str, target_index: int) -> bool:
@@ -608,8 +525,8 @@ class LurkNotesApp(Gtk.Application):
 
         Read-only and unconfirmed-corrupt decks still reorder in memory;
         ``_save_notes`` refuses the write and ticket 08's retry/banner rules
-        keep applying. Views are rebuilt after the gesture has ended, never in
-        the middle of it.
+        keep applying. Widgets are rebuilt after the gesture has ended, never
+        in the middle of it.
         """
         index = index_of(self.notes, note_id)
         if index == -1:
@@ -663,6 +580,16 @@ class LurkNotesApp(Gtk.Application):
         if self._focus_guard is not None:
             self._focus_guard.clear()
         self._set_focus_hint(False)
+        # The search belongs to one visible fan: collapsing clears it so the
+        # next hover starts with the whole deck.
+        self.panel.reset_search()
+        # Focus may have been granted to the search box. Hand the window back
+        # to input-less before it unmaps, so the next hover map cannot steal
+        # the keyboard (spec §9.1).
+        xid = self._xid(self.panel)
+        if xid is not None and self.x11 is not None:
+            self.x11.set_input(xid, False)
+            self.x11.set_no_focus(xid)
         self.panel.set_visible(False)
         self._hooks.schedule_dump(delay=30)
 
@@ -721,9 +648,6 @@ class LurkNotesApp(Gtk.Application):
         self.new_note()
         return True
 
-    def command_all(self) -> None:
-        self.show_all_notes()
-
     def new_note(self) -> None:
         """Create a note at the top of the deck and open it (spec §4.1)."""
         if self.read_only or self.overwrite_blocked:
@@ -755,8 +679,8 @@ class LurkNotesApp(Gtk.Application):
         self._leave_current()
         self.current_id = note.id
         self.deck.open(note.id)
-        # All Notes can open a note while the deck rests as a strip; the
-        # editor must map that hidden panel before present() focuses it.
+        # The editor must map the panel before present() focuses it, even if
+        # the deck was resting as a strip.
         if self.panel is not None:
             self.panel.set_visible(True)
             self._maybe_show_onboarding()
@@ -784,7 +708,7 @@ class LurkNotesApp(Gtk.Application):
         self._hooks.schedule_dump()
 
     def collapse_deck(self) -> None:
-        """Collapse fan -> strip from the header ``×`` (no focus needed).
+        """Collapse fan -> strip from the header ``»`` (no focus needed).
 
         The machine refuses in ``open``: an open note is never discarded by a
         hover path or a stray click on a header that is not even showing. An
@@ -863,6 +787,28 @@ class LurkNotesApp(Gtk.Application):
         self._set_focus_hint(False)
         self._hooks.schedule_dump(delay=30)
 
+    def _grant_search_focus(self) -> bool:
+        """Click / Ctrl+F in the fan: take input and focus the search box.
+
+        The fan maps input-less for hover (spec §9.1), so typing into the
+        search box is possible only after this explicit grant. ``Ctrl+F`` is
+        handled only where the deck already has the keyboard; an open note
+        keeps its editor focused and the hidden fan never steals the key.
+        """
+        if self.panel is None or self.state == STATE_OPEN:
+            return False
+        if self._focus_guard is not None:
+            self._focus_guard.clear()
+        self._set_focus_hint(False)
+        xid = self._xid(self.panel)
+        if xid is not None and self.x11 is not None:
+            self.x11.set_input(xid, True)
+            self.x11.allow_focus(xid)
+        self.panel.present()
+        self.panel.focus_search()
+        self._hooks.schedule_dump(delay=30)
+        return True
+
     def _grant_panel_focus(self) -> None:
         """First click on an unfocused editor: take input and focus the caret."""
         if self.panel is None:
@@ -882,35 +828,6 @@ class LurkNotesApp(Gtk.Application):
         show = getattr(self.panel, "show_focus_hint", None)
         if show is not None:
             show(visible)
-
-    def _watch_all_notes_focus(self) -> None:
-        if self.all_notes is None or self.x11 is None:
-            return
-        if self._all_notes_focus_guard is None:
-            self._all_notes_focus_guard = FocusGuard(
-                self._schedule_timer,
-                self._cancel_timer,
-                is_focused=self._all_notes_has_focus,
-                on_missing=self._on_all_notes_focus_missing,
-            )
-        self._all_notes_focus_guard.watch()
-
-    def _all_notes_has_focus(self) -> bool:
-        if self.all_notes is None or self.x11 is None:
-            return False
-        if self._hooks.refuse_focus:
-            return False
-        xid = self._xid(self.all_notes)
-        return xid is not None and self.x11.has_focus(xid)
-
-    def _on_all_notes_focus_missing(self) -> None:
-        # A normal window takes focus on click by itself; retry the activation
-        # once rather than pretending an edge panel is on screen.
-        if self.all_notes is None or not self.all_notes.get_visible():
-            return
-        self.all_notes.present()
-        self.all_notes.focus_search()
-        self._hooks.schedule_dump(delay=30)
 
     def _maybe_show_onboarding(self) -> None:
         """Show the one-time hotkey hint the first time the deck is visible."""
@@ -1067,8 +984,6 @@ class LurkNotesApp(Gtk.Application):
         self.save_source = GLib.timeout_add(
             SAVE_DEBOUNCE_MS, self._on_save_timeout
         )
-        # All Notes reads the live editor buffer through ``notes_for_view``,
-        # so it sees the keystroke before the autosave timer fires.
         self.deck_changed()
 
     def _on_save_timeout(self) -> bool:

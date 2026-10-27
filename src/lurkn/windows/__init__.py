@@ -1,1 +1,1 @@
-"""Window modules: strip, panel, All Notes (the latter two arrive in later tickets)."""
+"""Window modules: the strip and the panel."""

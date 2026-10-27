@@ -154,14 +154,11 @@ def test_reordering_moves_the_note_to_the_target_and_saves_it_once() -> None:
     app = make_app([first, second, third])
     panel = app.panel
     store = app.store
-    notified: list[bool] = []
-    app.deck_changed_event.subscribe(lambda: notified.append(True))
 
     assert app.reorder_note("first", 2) is True
 
     assert [note.id for note in app.notes] == ["second", "third", "first"]
     assert store.saved == [["second", "third", "first"]]
-    assert notified == [True]
     # The fan/rail rebuild is the app's job, after the gesture has ended.
     assert panel.refreshed[-1] == (["second", "third", "first"], None)
 

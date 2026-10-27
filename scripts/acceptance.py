@@ -479,7 +479,7 @@ def probe_warm_new(root: Path, runs: int = WARM_RUNS) -> None:
                 f"{delivered:.0f} ms, visible in {observed:.0f} ms"
             )
             # Return to the rest state for the next measurement. Closing the
-            # untouched note removes it; the header x collapses the fan.
+            # untouched note removes it; the header » collapses the fan.
             if not base._control(process, "close"):
                 raise AcceptanceFailure("could not close the warm-test note")
             wait_dump(

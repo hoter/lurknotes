@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove ticket 04 through the real X11 UI: hover, peek, collapse, Esc, ×.
+"""Prove ticket 04 through the real X11 UI: hover, peek, collapse, Esc, ».
 
 The pointer is moved with XTest (`xdotool` is not installed) and all state is
 observed from outside: xwininfo/xprop, the JSON snapshot hook, and xwd pixels.
@@ -27,7 +27,6 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import harness as h  # noqa: E402
 import smoke_note as base  # noqa: E402
-from lurkn.strings import ALL_NOTES_TITLE  # noqa: E402
 
 SmokeFailure = base.SmokeFailure
 ALL_DESKTOPS = 4294967295
@@ -346,7 +345,6 @@ def check_peek_in_fan(
             base.STRIP_TITLE,
             base.FAN_TITLE,
             base.NOTE_TITLE,
-            ALL_NOTES_TITLE,
         ):
             allowed.update(base._windows_titled(title, app.pid))
         extras: list[str] = []
@@ -867,7 +865,7 @@ def scenario_peek(
     )
 
     # Leave the tab but stay in the fan: the peek hides, the fan stays.
-    x, y = point_in(fan, 40, 20)  # the NOTES header, not a tab
+    x, y = point_in(fan, 40, 20)  # the "Lurk Notes" header, not a tab
     base._raise_until_top(xtest, fan, x, y, "the fan header")
     xtest.move(x, y)
     cleared = snapshot(
@@ -1026,7 +1024,158 @@ def scenario_collapse_and_remap(
     check_fan_hints(fan)
     if fan_viewable(app) is None:
         raise SmokeFailure("the fan did not stay mapped after an external focus check")
-    print("smoke-hover: remap after collapse re-applied position, EWMH state and input=False")
+    # Crossing from the strip into the freshly mapped panel may deliver the
+    # panel's enter before the strip's leave. If that leave is mistaken for a
+    # real departure, the 400 ms timer folds the fan under the pointer.
+    x, y = point_in(fan, 200, 120)
+    xtest.move(x, y)
+    time.sleep(0.8)
+    if fan_viewable(app) is None:
+        raise SmokeFailure(
+            "the fan collapsed by itself after the pointer entered the panel"
+        )
+    print(
+        "smoke-hover: remap after collapse re-applied position, EWMH state, "
+        "input=False; the fan stayed mapped after crossing strip -> panel"
+    )
+
+
+def scenario_fan_search(
+    app: subprocess.Popen[str],
+    dump: Path,
+    xtest: base.XTest,
+    notes: list[dict],
+) -> None:
+    """Search above the list: live filter, click-through, no drag, reset."""
+    fan, _ = wait_fan_viewable(app)
+    ready = snapshot(
+        dump,
+        app,
+        lambda snap: snap.get("state") == "fan"
+        and snap.get("search_center") is not None,
+    )
+    if ready.get("search_text") != "":
+        raise SmokeFailure(f"the fan reopened with query {ready['search_text']!r}")
+    if len(ready.get("tab_ids") or []) != NOTE_COUNT:
+        raise SmokeFailure("the unfiltered fan does not show the whole deck")
+
+    click_center(xtest, fan, ready["search_center"], "the fan search box")
+    xtest.focus(fan)
+    xtest.type_text("standup")
+    filtered = snapshot(
+        dump,
+        app,
+        lambda snap: snap.get("state") == "fan"
+        and snap.get("search_text") == "standup"
+        and snap.get("tab_ids") == [notes[1]["id"]]
+        # A dump scheduled on the keystroke can land before GTK has allocated
+        # the rebuilt tab; its centre then reads near x=0. The fan is 380 px
+        # wide, so a laid-out tab is always centred far from the left edge.
+        and len(snap.get("tab_centers") or []) == 1
+        and (snap["tab_centers"][0][0] or 0) > 100,
+    )
+    if filtered.get("tab_ids") != [notes[1]["id"]]:
+        raise SmokeFailure(
+            f"filtering 'standup' showed {filtered.get('tab_titles')!r}, "
+            "expected only the Standup note"
+        )
+    if len(filtered.get("tab_centers") or []) != 1:
+        raise SmokeFailure("the filtered fan rendered more than one tab")
+    if filtered.get("drag", {}).get("reorder_enabled") is not False:
+        raise SmokeFailure("reordering stayed enabled while the fan was filtered")
+    print("smoke-hover: typing in the fan search box filtered the deck live")
+
+    click_center(
+        xtest, fan, filtered["tab_centers"][0], "the filtered tab"
+    )
+    snapshot(
+        dump,
+        app,
+        lambda snap: snap.get("state") == "open"
+        and snap.get("current_id") == notes[1]["id"],
+    )
+    xtest.press_escape()
+    back = snapshot(
+        dump,
+        app,
+        lambda snap: snap.get("state") == "fan"
+        and snap.get("search_text") == "standup",
+    )
+    if back.get("tab_ids") != [notes[1]["id"]]:
+        raise SmokeFailure("closing the note dropped the fan filter")
+    print("smoke-hover: a filtered tab opened the right note; Esc kept the query")
+
+    # A press that crosses the drag threshold must neither lift nor reorder a
+    # tab while the list is filtered; the session stays click-only.
+    fan = fan_viewable(app)
+    if fan is None:
+        raise SmokeFailure("the fan vanished before the filtered drag check")
+    ready = snapshot(
+        dump,
+        app,
+        lambda snap: snap.get("state") == "fan"
+        and bool(snap.get("tab_centers")),
+    )
+    x, y = point_in(fan, *ready["tab_centers"][0])
+    base._raise_until_top(xtest, fan, x, y, "the filtered tab")
+    scale = base._effective_scale()
+    xtest.move(x, y)
+    xtest.press()
+    xtest.move(x, y + round(45 * scale))
+    xtest.release()
+    time.sleep(0.4)
+    after = snapshot(dump, app, lambda snap: snap.get("state") == "fan")
+    if after.get("drag", {}).get("active"):
+        raise SmokeFailure("a filtered tab started a reorder drag")
+    if after.get("ids") != [note["id"] for note in notes]:
+        raise SmokeFailure("a filtered drag changed the deck order")
+    print("smoke-hover: dragging a filtered tab is blocked and order is intact")
+
+    ready = snapshot(
+        dump,
+        app,
+        lambda snap: snap.get("state") == "fan"
+        and snap.get("collapse_button_center") is not None,
+    )
+    click_center(xtest, fan, ready["collapse_button_center"], "the collapse chevron")
+    wait_fan_closed(app)
+    hover_strip(xtest, app)
+    wait_fan_viewable(app)
+    reset = snapshot(
+        dump,
+        app,
+        lambda snap: snap.get("state") == "fan"
+        and snap.get("search_text") == "",
+    )
+    if reset.get("tab_ids") != [note["id"] for note in notes]:
+        raise SmokeFailure("reopening the fan did not restore the full deck")
+    print("smoke-hover: collapsing cleared the query and restored every tab")
+
+    # Ctrl+F on the deck's keyboard surface moves the caret into the field.
+    fan = fan_viewable(app)
+    if fan is None:
+        raise SmokeFailure("the fan vanished before the Ctrl+F check")
+    if reset.get("search_focused"):
+        raise SmokeFailure("the search box kept focus after the collapse")
+    xtest.focus(fan)
+    xtest.chord(0x66)  # Ctrl+F
+    snapshot(dump, app, lambda snap: snap.get("search_focused") is True)
+    print("smoke-hover: Ctrl+F focused the fan search box")
+
+    xtest.type_text("stand")
+    snapshot(dump, app, lambda snap: snap.get("search_text") == "stand")
+    xtest.press_escape()
+    cleared = snapshot(
+        dump,
+        app,
+        lambda snap: snap.get("state") == "fan"
+        and snap.get("search_text") == "",
+    )
+    if len(cleared.get("tab_ids") or []) != NOTE_COUNT:
+        raise SmokeFailure("Esc did not restore the full deck from the filter")
+    if fan_viewable(app) is None:
+        raise SmokeFailure("Esc collapsed the fan instead of clearing the query")
+    print("smoke-hover: Esc cleared the query and left the fan mapped")
 
 
 def scenario_open_and_escape(
@@ -1169,12 +1318,12 @@ def scenario_header_close(
     before = active_window()
     try:
         click_center(
-            xtest, fan, ready["collapse_button_center"], "the fan header ×"
+            xtest, fan, ready["collapse_button_center"], "the fan header »"
         )
         elapsed = wait_fan_closed(app)
     except SmokeFailure:
         print(
-            "smoke-hover: header × click was blocked; emitting the same "
+            "smoke-hover: header » click was blocked; emitting the same "
             "button signal through the control channel"
         )
         started = time.monotonic()
@@ -1184,11 +1333,16 @@ def scenario_header_close(
         elapsed = (time.monotonic() - started) * 1000
     state = snapshot(dump, app, lambda snap: snap.get("state") == "strip")
     if state.get("state") != "strip":
-        raise SmokeFailure(f"header × left state {state.get('state')!r}")
+        raise SmokeFailure(f"header » left state {state.get('state')!r}")
     if active_window() == int(fan, 16) and active_window() != before:
-        raise SmokeFailure("clicking the header × focused the panel")
+        raise SmokeFailure("clicking the header » focused the panel")
+    # The pointer is still parked where the header was. The leave generated by
+    # unmapping the panel must not be mistaken for an enter and re-expand it.
+    time.sleep(0.4)
+    if fan_viewable(app) is not None:
+        raise SmokeFailure("the fan re-expanded after the header collapse")
     print(
-        f"smoke-hover: header × collapsed the deck in {elapsed:.0f} ms "
+        f"smoke-hover: header » collapsed the deck in {elapsed:.0f} ms "
         "without needing keyboard focus"
     )
 
@@ -1297,7 +1451,7 @@ def scenario_undo_pin(xtest: base.XTest, temporary: Path) -> None:
             raise SmokeFailure("Undo did not restore the deleted note")
         print("smoke-hover: Undo restored the note while the pointer stayed off-deck")
 
-        # Delete again, then prove the header × is also pinned, and that
+        # Delete again, then prove the header » is also pinned, and that
         # expiry collapses a panel whose pointer is already outside.
         note = base._wait_for_window(base.NOTE_TITLE, app)
         xtest.focus(note)
@@ -1315,16 +1469,16 @@ def scenario_undo_pin(xtest: base.XTest, temporary: Path) -> None:
         if fan_viewable(app) is None:
             raise SmokeFailure("the fan collapsed during the second undo window")
         if not header_center:
-            raise SmokeFailure("the pinned fan has no header × center")
+            raise SmokeFailure("the pinned fan has no header » center")
         try:
-            click_center(xtest, fan, header_center, "the pinned header ×")
+            click_center(xtest, fan, header_center, "the pinned header »")
         except SmokeFailure:
             control(app, "header")
         time.sleep(0.3)
         still = snapshot(dump, app, lambda snap: snap.get("state") == "fan")
         if fan_viewable(app) is None or not (still.get("toast") or {}).get("visible"):
-            raise SmokeFailure("the header × dismissed the live undo toast")
-        print("smoke-hover: header × is ignored while an undo is pending")
+            raise SmokeFailure("the header » dismissed the live undo toast")
+        print("smoke-hover: header » is ignored while an undo is pending")
 
         move_away(xtest)
         expired = snapshot(
@@ -1381,21 +1535,64 @@ def scenario_empty_deck(
         if empty.get("tab_centers") != []:
             raise SmokeFailure("an empty deck rendered tabs")
         check_panel_capture(fan, "the empty fan")
+
+        button_center = empty.get("empty_new_center")
+        if not button_center:
+            raise SmokeFailure("an empty deck has no New note button")
+        try:
+            click_center(xtest, fan, button_center, "the empty deck New note")
+            opened = snapshot(
+                dump,
+                app,
+                lambda snap: snap.get("state") == "open"
+                and len(snap.get("ids") or []) == 1
+                and snap.get("text") == "",
+            )
+        except SmokeFailure:
+            print(
+                "smoke-hover: empty-deck New note click was blocked; using "
+                "the control channel"
+            )
+            if not control(app, "new"):
+                raise
+            opened = snapshot(
+                dump,
+                app,
+                lambda snap: snap.get("state") == "open"
+                and len(snap.get("ids") or []) == 1,
+            )
+        if opened.get("ids", [None])[0] != opened.get("current_id"):
+            raise SmokeFailure("the empty deck New note did not open its note")
+        base._close_note_with_escape(
+            xtest, app, base._wait_for_window(base.NOTE_TITLE, app)
+        )
+        back = snapshot(
+            dump,
+            app,
+            lambda snap: snap.get("state") == "fan" and snap.get("ids") == [],
+        )
+        if back.get("empty_new_center") is None:
+            raise SmokeFailure("the empty state lost its New note button")
+        print(
+            "smoke-hover: empty deck offered New note; it created a note and "
+            "closing the untouched note restored the empty state"
+        )
+
         try:
             click_center(
-                xtest, fan, empty["collapse_button_center"], "the empty deck header ×"
+                xtest, fan, empty["collapse_button_center"], "the empty deck header »"
             )
             wait_fan_closed(app)
         except SmokeFailure:
             print(
-                "smoke-hover: empty-deck header × was blocked; using the "
+                "smoke-hover: empty-deck header » was blocked; using the "
                 "control channel"
             )
             if not control(app, "header"):
                 raise
             wait_fan_closed(app)
         snapshot(dump, app, lambda snap: snap.get("state") == "strip")
-        print("smoke-hover: empty deck opens its fan and the header × collapses it")
+        print("smoke-hover: empty deck opens its fan and the header » collapses it")
     finally:
         base._stop(app)
     base._wait_for_no_windows(
@@ -1434,6 +1631,7 @@ def main() -> int:
                 if not control(app, "strip"):
                     raise
                 wait_fan_viewable(app, timeout=3.0)
+            scenario_fan_search(app, dump, xtest, notes)
             scenario_header_close(app, dump, xtest)
             base._stop(app)
             base._wait_for_no_windows(

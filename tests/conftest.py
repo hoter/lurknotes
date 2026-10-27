@@ -11,7 +11,6 @@ from typing import Callable
 
 from lurkn.app import STATE_FAN, LurkNotesApp
 from lurkn.deck import DeckMachine
-from lurkn.events import DeckChanged
 from lurkn.notes import Note
 from lurkn.testhooks import TestHooks
 from lurkn.undo import UndoController
@@ -160,12 +159,9 @@ def make_app(
     app._workarea = None
     app._load_result = None
     app._load_error = None
-    app.all_notes = None
     app._focus_guard = None
-    app._all_notes_focus_guard = None
     app._onboarding_pending = False
     app._hooks = TestHooks(app)
-    app.deck_changed_event = DeckChanged()
     app._retrier = NullRetrier()
     app.scheduler = scheduler or FakeScheduler()
     app._undo = UndoController(

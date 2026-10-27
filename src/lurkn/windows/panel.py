@@ -31,6 +31,9 @@ class PanelWindow(Gtk.Window):
         on_escape: Callable[[], bool],
         on_changed: Callable[[], None],
         on_collapse: Callable[[], None],
+        on_quit: Callable[[], None],
+        on_search_focus: Callable[[], bool],
+        on_search_changed: Callable[[], None],
         on_hover_tab: Callable[[str], None],
         on_leave_tab: Callable[[str], None],
         on_scrolled: Callable[[], None],
@@ -44,6 +47,7 @@ class PanelWindow(Gtk.Window):
     ) -> None:
         super().__init__(application=application, title=strings.FAN_TITLE)
         self.on_escape = on_escape
+        self.on_search_focus = on_search_focus
         self.on_cycle = on_cycle
         self.on_delete = on_delete
         self.on_undo = on_undo
@@ -58,6 +62,8 @@ class PanelWindow(Gtk.Window):
             on_open=on_open,
             on_new=on_new,
             on_collapse=on_collapse,
+            on_quit=on_quit,
+            on_search_focus=lambda: on_search_focus(),
             on_hover_tab=on_hover_tab,
             on_leave_tab=on_leave_tab,
             on_reorder=on_reorder,
@@ -66,7 +72,10 @@ class PanelWindow(Gtk.Window):
             on_drag_update=on_drag_update,
             on_drag_end=on_drag_end,
         )
-        self.note = NotePage(on_close, on_open, on_changed)
+        # Fires after the fan rebuilt its filtered tabs, so the smoke dump
+        # observes the new list rather than the previous one.
+        self.fan.search.connect("changed", lambda _entry: on_search_changed())
+        self.note = NotePage(on_close, on_open, on_changed, on_delete)
 
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
@@ -165,14 +174,40 @@ class PanelWindow(Gtk.Window):
     def rail_centers(self) -> list[list[float]]:
         return self.note.rail_centers()
 
+    def note_delete_center(self) -> list[float] | None:
+        return self.note.delete_button_center(relative_to=self)
+
+    # -- fan search (spec §6.2) ---------------------------------------
+
+    def search_text(self) -> str:
+        return self.fan.search_text()
+
+    def search_focused(self) -> bool:
+        return self.fan.search_focused()
+
+    def search_center(self) -> list[float] | None:
+        return self.fan.search_center(relative_to=self)
+
+    def focus_search(self) -> None:
+        self.fan.focus_search()
+
+    def reset_search(self) -> None:
+        self.fan.reset_search()
+
     def active_index(self) -> int:
         return self.note.active_index()
 
     def new_button_center(self) -> list[float] | None:
         return self.fan.new_button_center()
 
+    def empty_new_center(self) -> list[float] | None:
+        return self.fan.empty_new_center()
+
     def collapse_button_center(self) -> list[float] | None:
         return self.fan.collapse_button_center()
+
+    def quit_button_center(self) -> list[float] | None:
+        return self.fan.quit_button_center()
 
     def tab_center(self, note_id: str) -> list[float] | None:
         return self.fan.tab_center(note_id, relative_to=self)
@@ -219,6 +254,9 @@ class PanelWindow(Gtk.Window):
     def activate_collapse(self) -> None:
         self.fan.activate_collapse()
 
+    def activate_new(self) -> None:
+        self.fan.activate_new()
+
     # -- focus hint (spec §9.5) ---------------------------------------
 
     def show_focus_hint(self, visible: bool) -> None:
@@ -261,6 +299,9 @@ class PanelWindow(Gtk.Window):
 
     def _on_key_pressed(self, _controller, keyval, _keycode, state) -> bool:
         control = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        # Ctrl+F focuses the fan's search box when the deck has the keyboard.
+        if control and keyval in (Gdk.KEY_f, Gdk.KEY_F):
+            return self.on_search_focus()
         # Spec §7.3: capture phase suppresses the TextView's own Ctrl+Backspace
         # word deletion and its default Ctrl+Z handling.
         if control and keyval == Gdk.KEY_BackSpace:
@@ -268,6 +309,11 @@ class PanelWindow(Gtk.Window):
         if control and keyval in (Gdk.KEY_z, Gdk.KEY_Z):
             return self.on_undo()
         if keyval == Gdk.KEY_Escape:
+            # A query is the first thing Esc clears in the search box; only
+            # the next Esc collapses the fan as spec §7.3 describes.
+            if self.fan.search_focused() and self.fan.search_text().strip():
+                self.fan.reset_search()
+                return True
             return self.on_escape()
         # Spec §7.3: Ctrl+Tab / Ctrl+Shift+Tab cycle notes. GTK reports
         # Shift+Tab as ISO_Left_Tab, so both keyvals mean "previous".

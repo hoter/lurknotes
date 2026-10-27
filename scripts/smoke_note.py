@@ -623,6 +623,18 @@ class XTest:
         self.xlib.XFlush(self.display)
         time.sleep(0.05)
 
+    def press(self) -> None:
+        """Hold the left button down at the current pointer position."""
+        self.xtst.XTestFakeButtonEvent(self.display, 1, 1, 0)
+        self.xlib.XFlush(self.display)
+        time.sleep(0.05)
+
+    def release(self) -> None:
+        """Release the left button; pairs with :meth:`press` for drag tests."""
+        self.xtst.XTestFakeButtonEvent(self.display, 1, 0, 0)
+        self.xlib.XFlush(self.display)
+        time.sleep(0.05)
+
     def wheel(self, notches: int, *, up: bool = False) -> None:
         """Turn the wheel over the pointer: X buttons 4 (up) and 5 (down)."""
         button = 4 if up else 5

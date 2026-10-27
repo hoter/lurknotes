@@ -35,7 +35,3 @@ _Avoid_: Preview, tooltip, hover
 **Panel**:
 Открытая заметка с редактором и фокусом клавиатуры. В v1 панель одна.
 _Avoid_: Window, editor, note view
-
-**All Notes**:
-Отдельное окно со списком всех заметок и поиском.
-_Avoid_: Manager, library, dashboard
