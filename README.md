@@ -59,16 +59,22 @@ it. Nothing is written outside `$XDG_DATA_HOME` and `~/.config`.
 ## Test
 
 ```sh
-/home/dev/projects/ubuntu/.venv/bin/python -m pytest
-/home/dev/projects/ubuntu/.venv/bin/python scripts/smoke.py
-/home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_note.py
-/home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_hover.py
-/home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_delete.py
-/home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_storage.py
-/home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_drag.py
-/home/dev/projects/ubuntu/.venv/bin/python scripts/smoke_integration.py
-/home/dev/projects/ubuntu/.venv/bin/python scripts/acceptance.py
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install pytest
+
+.venv/bin/python -m pytest
+.venv/bin/python scripts/smoke.py
+.venv/bin/python scripts/smoke_note.py
+.venv/bin/python scripts/smoke_hover.py
+.venv/bin/python scripts/smoke_delete.py
+.venv/bin/python scripts/smoke_storage.py
+.venv/bin/python scripts/smoke_drag.py
+.venv/bin/python scripts/smoke_integration.py
+.venv/bin/python scripts/acceptance.py
 ```
+
+The venv needs `--system-site-packages`: PyGObject and GTK 4 come from the
+system and must match the installed GTK, not from PyPI.
 
 Each smoke starts its own instance against temporary XDG directories, uses a
 unique application id, checks the real X11 windows, then stops the process it

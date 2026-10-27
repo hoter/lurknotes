@@ -27,7 +27,7 @@ Probes
 
 Usage::
 
-    /home/dev/projects/ubuntu/.venv/bin/python scripts/acceptance.py [--keep]
+    .venv/bin/python scripts/acceptance.py [--keep]
 
 ``--keep`` leaves the temporary tree for inspection. Without it, the tree is
 removed and every process the script started is stopped first.
