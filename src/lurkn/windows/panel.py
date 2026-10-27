@@ -127,8 +127,11 @@ class PanelWindow(Gtk.Window):
         self.set_title(strings.NOTE_TITLE)
         self.fan.set_notes(notes)
         self.note.set_notes(notes, note.id)
-        self.note.load(note)
+        # Show the page before loading: scrolling the caret to the end while
+        # the editor is hidden uses the wrong allocation and can leave the
+        # first lines above the viewport even when the whole note fits.
         self.stack.set_visible_child_name("note")
+        self.note.load(note)
 
     def refresh_notes(self, notes: Sequence[Note], active_id: str | None) -> None:
         self.fan.set_notes(notes)
