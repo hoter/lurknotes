@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "lurknotes"
 version = "0.1.0"
 description = "Notes deck at the edge of the screen"
+readme = "README.md"
 requires-python = ">=3.12"
 # PyGObject/GTK 4 are provided by the system (Ubuntu 24.04); do not pull them
 # from PyPI, the bindings must match the installed GTK.
@@ -13,6 +14,9 @@ dependencies = []
 
 [project.scripts]
 lurknotes = "lurkn.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/hoter/lurknotes"
 
 [tool.setuptools.packages.find]
 where = ["src"]

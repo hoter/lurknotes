@@ -32,6 +32,7 @@ class Command:
     autostart: bool = False
     install_autostart: bool = False
     help: bool = False
+    version: bool = False
 
 
 def parse(argv: list[str]) -> Command:
@@ -45,10 +46,13 @@ def parse(argv: list[str]) -> Command:
     autostart = False
     install = False
     wants_help = False
+    wants_version = False
 
     for argument in argv:
         if argument in ("--help", "-h"):
             wants_help = True
+        elif argument in ("--version", "-V"):
+            wants_version = True
         elif argument == "--autostart":
             if autostart:
                 raise CliError(strings.CLI_DUPLICATE.format(argument=argument))
@@ -76,6 +80,8 @@ def parse(argv: list[str]) -> Command:
 
     if wants_help:
         return Command(help=True)
+    if wants_version:
+        return Command(version=True)
 
     if install and (action or autostart):
         raise CliError(strings.CLI_INSTALL_ALONE)

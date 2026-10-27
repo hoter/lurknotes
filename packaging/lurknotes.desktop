@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lurk Notes
+Comment=Notes deck at the edge of the screen
+Exec=lurknotes
+Icon=lurknotes
+Terminal=false
+Categories=Utility;
+Keywords=notes;note;deck;
+StartupNotify=false

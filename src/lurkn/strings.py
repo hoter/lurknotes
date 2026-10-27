@@ -60,9 +60,11 @@ STATUS_CONTINUE = "Continue"
 STATUS_DISMISS = "Dismiss status"
 QUIT = "Quit LurkNotes"
 
+VERSION = "lurknotes {version}"
 USAGE = (
     "usage: lurknotes [new] | lurknotes --autostart | "
-    "lurknotes --install-autostart | lurknotes --help"
+    "lurknotes --install-autostart | lurknotes --help | "
+    "lurknotes --version"
 )
 CLI_UNKNOWN_COMMAND = "lurknotes: unknown command {argument!r}; " + USAGE
 CLI_UNKNOWN_OPTION = "lurknotes: unknown option {argument!r}; " + USAGE

@@ -34,6 +34,7 @@ gi.require_version("GdkX11", "4.0")
 
 from gi.repository import Gdk, GdkX11, Gio, GLib, Gtk
 
+from . import __version__
 from . import autostart as autostart_file
 from . import storage_ui
 from . import strings
@@ -206,6 +207,9 @@ class LurkNotesApp(Gtk.Application):
 
         if command.help:
             print(strings.USAGE)
+            return 0
+        if command.version:
+            print(strings.VERSION.format(version=__version__))
             return 0
         if command.install_autostart:
             return self._install_autostart()

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from lurkn import __version__
 from lurkn.__main__ import main
 from lurkn.cli import CliError, Command, parse
 
@@ -68,6 +69,22 @@ def test_install_autostart_may_not_carry_other_operands() -> None:
 def test_help_prints_usage_and_exits_zero(capsys) -> None:
     assert main(["--help"]) == 0
     assert "usage: lurknotes" in capsys.readouterr().out
+
+
+def test_version_is_a_standalone_flag() -> None:
+    assert parse(["--version"]) == Command(version=True)
+    assert parse(["-V"]) == Command(version=True)
+    assert parse(["new", "--version"]).version is True
+
+
+def test_help_wins_over_version() -> None:
+    assert parse(["--version", "--help"]).help is True
+
+
+def test_version_prints_without_a_display(capsys) -> None:
+    assert main(["--version"]) == 0
+    output = capsys.readouterr().out
+    assert output == f"lurknotes {__version__}\n"
 
 
 def test_unknown_and_autostart_with_command_exit_nonzero(capsys) -> None:

@@ -25,6 +25,38 @@ The fan at the right edge: search over the notes list, the 10 px strip on the ri
 Screenshots are generated from the real app by `scripts/screenshots.py` (isolated
 data, real X11 windows), so they can be refreshed after UI changes.
 
+## Install
+
+LurkNotes uses GTK 4 and PyGObject from the system, so install those first
+(Ubuntu 24.04):
+
+```sh
+sudo apt install python3-gi gir1.2-gtk-4.0
+```
+
+**pipx** (from the release tarball):
+
+```sh
+sudo apt install pipx
+pipx install --system-site-packages \
+  https://github.com/hoter/lurknotes/releases/download/v0.1.0/lurknotes-0.1.0.tar.gz
+lurknotes --install-autostart   # optional: start the strip at login
+```
+
+`--system-site-packages` is required: PyGObject is not on PyPI and must match
+the installed GTK.
+
+**Debian package:**
+
+```sh
+sudo apt install ./lurknotes_0.1.0_all.deb
+lurknotes --install-autostart
+```
+
+The app needs an X11/XWayland session; GNOME 46 on Wayland works through
+XWayland. `lurknotes --version` prints the installed version, and
+`lurknotes --help` lists the commands.
+
 ## Run
 
 ```sh

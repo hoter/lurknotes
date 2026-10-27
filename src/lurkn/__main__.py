@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 
+from . import __version__
 from . import autostart as autostart_file
 from . import strings
 from .cli import CliError, parse
@@ -28,6 +29,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if command.help:
         print(strings.USAGE)
+        return 0
+
+    if command.version:
+        print(strings.VERSION.format(version=__version__))
         return 0
 
     if command.install_autostart:
