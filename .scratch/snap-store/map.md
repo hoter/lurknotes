@@ -37,6 +37,12 @@ LurkNotes 0.1.0 опубликован в Snap Store в канале `stable`: �
 - [Research: снап-рецепт для PyGObject/GTK4](issues/01-research-snapcraft-runtime.md): `core24` + `[gnome]` даёт GTK 4.20/PyGObject; libX11 приходит из `mesa-2404` через `gpu-2404`; `python` plugin опционален; нужен `DISABLE_WAYLAND=1`/`GDK_BACKEND=x11`.
 - [Research: данные и единый экземпляр в снапе](issues/03-research-data-and-instance.md): snap видит только `$SNAP_USER_DATA`; старый `~/.local/share` недоступен без `personal-files` (не берём); нужен собственный app id и `dbus` slot, данные — в `SNAP_USER_DATA`, миграция вручную.
 - [Research: публикация и ревью в Snap Store](issues/05-research-store-review.md): регистрация имени — ручное ревью (Developer Programme Agreement); категория `utilities`, keywords в Store нет; `x11`/`desktop`/`autostart` ревью не триггерят, `dbus` slot — триггерит; ревизии неизменяемы, откат — переrelease.
+- [Research: X11/EWMH внутри strict-снапа](issues/02-research-x11-under-strict.md): strict + `x11` видит XWayland и сохраняет все EWMH-трюки; libX11 — из `mesa-2404`/`gpu-2404`; classic не нужен; `GDK_BACKEND=x11` обязателен.
+
+- [Research: автозапуск снапа](issues/04-research-autostart.md): `apps.<name>.autostart` — только basename; snapd ищет файл в `$SNAP_USER_DATA/.config/autostart`, который приложение пишет само при первом запуске; `--autostart` передаётся только если явно указан в `Exec=`.
+- [Research: снап-рецепт для PyGObject/GTK4](issues/01-research-snapcraft-runtime.md): `core24` + `[gnome]` даёт GTK 4.20/PyGObject; libX11 приходит из `mesa-2404` через `gpu-2404`; `python` plugin опционален; нужен `DISABLE_WAYLAND=1`/`GDK_BACKEND=x11`.
+- [Research: данные и единый экземпляр в снапе](issues/03-research-data-and-instance.md): snap видит только `$SNAP_USER_DATA`; старый `~/.local/share` недоступен без `personal-files` (не берём); нужен собственный app id и `dbus` slot, данные — в `SNAP_USER_DATA`, миграция вручную.
+- [Research: публикация и ревью в Snap Store](issues/05-research-store-review.md): регистрация имени — ручное ревью (Developer Programme Agreement); категория `utilities`, keywords в Store нет; `x11`/`desktop`/`autostart` ревью не триггерят, `dbus` slot — триггерит; ревизии неизменяемы, откат — переrelease.
 
 - [Research: автозапуск снапа](issues/04-research-autostart.md): `apps.<name>.autostart` — только basename; snapd ищет файл в `$SNAP_USER_DATA/.config/autostart`, который приложение пишет само при первом запуске; `--autostart` передаётся только если явно указан в `Exec=`.
 - [Research: снап-рецепт для PyGObject/GTK4](issues/01-research-snapcraft-runtime.md): `core24` + `[gnome]` даёт GTK 4.20/PyGObject; libX11 приходит из `mesa-2404` через `gpu-2404`; `python` plugin опционален; нужен `DISABLE_WAYLAND=1`/`GDK_BACKEND=x11`.
@@ -49,8 +55,6 @@ LurkNotes 0.1.0 опубликован в Snap Store в канале `stable`: �
 
 ## Not yet specified
 
-- Если `strict` + X11 не воспроизведёт поведение «у края поверх окон» —
-  решить, просить ли classic (отдельное ревью) или менять механизм окна.
 - Окружение сборки/тестов: LXD (не-root после добавления в группу `lxd`, что
   эквивалентно root), Multipass/remote-build или destructive mode под root;
   выбор — в 12.
