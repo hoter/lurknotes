@@ -35,6 +35,10 @@ LurkNotes 0.1.0 опубликован в Snap Store в канале `stable`: �
 
 - [Research: автозапуск снапа](issues/04-research-autostart.md): `apps.<name>.autostart` — только basename; snapd ищет файл в `$SNAP_USER_DATA/.config/autostart`, который приложение пишет само при первом запуске; `--autostart` передаётся только если явно указан в `Exec=`.
 - [Research: снап-рецепт для PyGObject/GTK4](issues/01-research-snapcraft-runtime.md): `core24` + `[gnome]` даёт GTK 4.20/PyGObject; libX11 приходит из `mesa-2404` через `gpu-2404`; `python` plugin опционален; нужен `DISABLE_WAYLAND=1`/`GDK_BACKEND=x11`.
+- [Research: данные и единый экземпляр в снапе](issues/03-research-data-and-instance.md): snap видит только `$SNAP_USER_DATA`; старый `~/.local/share` недоступен без `personal-files` (не берём); нужен собственный app id и `dbus` slot, данные — в `SNAP_USER_DATA`, миграция вручную.
+
+- [Research: автозапуск снапа](issues/04-research-autostart.md): `apps.<name>.autostart` — только basename; snapd ищет файл в `$SNAP_USER_DATA/.config/autostart`, который приложение пишет само при первом запуске; `--autostart` передаётся только если явно указан в `Exec=`.
+- [Research: снап-рецепт для PyGObject/GTK4](issues/01-research-snapcraft-runtime.md): `core24` + `[gnome]` даёт GTK 4.20/PyGObject; libX11 приходит из `mesa-2404` через `gpu-2404`; `python` plugin опционален; нужен `DISABLE_WAYLAND=1`/`GDK_BACKEND=x11`.
 
 - [Research: автозапуск снапа](issues/04-research-autostart.md): `apps.<name>.autostart` — только basename; snapd ищет файл в `$SNAP_USER_DATA/.config/autostart`, который приложение пишет само при первом запуске; `--autostart` передаётся только если явно указан в `Exec=`.
 
@@ -44,14 +48,16 @@ LurkNotes 0.1.0 опубликован в Snap Store в канале `stable`: �
   решить, просить ли classic (отдельное ревью) или менять механизм окна.
 - Окружение сборки/тестов: Snapcraft 9.x + LXD/Multipass, destructive mode или
   одноразовая VM; конкретный выбор — в 12 (тест-план).
-- Ожидания по данным существующих пользователей GitHub/deb: миграция или
-  отдельное хранилище snap (зависит от 03 и 10).
-- Нужен ли snap-сборке отдельный application id/D-Bus name, чтобы не
-  конфликтовать с deb/pipx-версией (03).
+- Политика данных и миграция существующих пользователей: 03 дал факты
+  (snap видит только `$SNAP_USER_DATA`, старый `~/.local/share` недоступен без
+  `personal-files`); решение — в 10.
+- Snap нужен собственный application id и `dbus` slot; какой именно id
+  (`dev.lurknotes.*` / `io.github.hoter.*`) и как мигрировать — в 10.
 - Детали скриншотов и текста листинга (07).
 - Судьба `--install-autostart` для не-snap установок (08).
 - Политика версии/ревизий при обновлениях в Store (11).
-- Поведение при удалении snap: сохраняются ли заметки, нужен ли экспорт (12).
+- Удаление snap: данные удаляются, но snapd оставляет snapshot ~31 день;
+  проверить и решить про экспорт — 12.
 
 ## Out of scope
 
