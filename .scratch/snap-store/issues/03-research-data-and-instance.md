@@ -4,6 +4,8 @@ Type: research
 Status: open
 Blocked by:
 
+Research branch: `research/data-and-instance` (findings: `.scratch/snap-store/research/03-data-and-instance.md`)
+
 ## Question
 
 Где LurkNotes будет хранить `notes.json` в strict-снапе и что произойдёт с

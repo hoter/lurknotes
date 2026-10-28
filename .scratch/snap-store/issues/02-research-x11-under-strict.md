@@ -4,6 +4,8 @@ Type: research
 Status: open
 Blocked by:
 
+Research branch: `research/x11-under-strict` (findings: `.scratch/snap-store/research/02-x11-under-strict.md`)
+
 ## Question
 
 Выживут ли текущие X11-трюки LurkNotes в strict-снапе под XWayland?

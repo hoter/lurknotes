@@ -4,6 +4,8 @@ Type: research
 Status: open
 Blocked by:
 
+Research branch: `research/snapcraft-runtime` (findings: `.scratch/snap-store/research/01-snapcraft-runtime.md`)
+
 ## Question
 
 Как собрать LurkNotes (Python 3.12, PyGObject, GTK 4.14) под `core24` со стеком

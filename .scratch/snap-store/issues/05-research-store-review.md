@@ -4,6 +4,8 @@ Type: research
 Status: open
 Blocked by:
 
+Research branch: `research/store-review` (findings: `.scratch/snap-store/research/05-store-review.md`)
+
 ## Question
 
 Какой полный путь публикации strict GUI-снапа в Snap Store и что проверяет

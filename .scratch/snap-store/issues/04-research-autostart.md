@@ -4,6 +4,8 @@ Type: research
 Status: open
 Blocked by:
 
+Research branch: `research/autostart` (findings: `.scratch/snap-store/research/04-autostart.md`)
+
 ## Question
 
 Как объявить автозапуск LurkNotes в strict-снапе и что это значит для
