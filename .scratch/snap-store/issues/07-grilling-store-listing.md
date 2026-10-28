@@ -16,7 +16,7 @@ Blocked by:
 - summary: «Notes deck at the edge of the screen for Ubuntu / GNOME»;
 - description: 3–5 абзацев о колоде, peek, поиске, локальном JSON,
   X11/XWayland-требовании;
-- category `Utility`, keywords `notes`, `note-taking`, `productivity`;
+- category `utilities` (слаг Store; поля keywords в форме нет);
 - скриншоты из `docs/screenshots` (fan, peek, search, note, drag, empty);
 - homepage `https://github.com/hoter/lurknotes`;
 - contact `aytpaev@gmail.com`, license MIT;
