@@ -18,8 +18,9 @@ LurkNotes 0.1.0 опубликован в Snap Store в канале `stable`: �
   `stable` + полный листинг, сначала `edge`; публикуем 0.1.0 как есть с
   требованием X11/XWayland; лицензия MIT; amd64 + `core24`; карта даёт решения
   и маршрут, реализация — отдельным заходом после её закрытия.
-- Confinement `strict`; автозапуск объявляется в `snapcraft.yaml` и включён
-  по умолчанию; `--install-autostart` для snap-сборки убираем.
+- Confinement `strict`; автозапуск по умолчанию: `snapcraft.yaml` объявляет только
+  basename, а файл в `$SNAP_USER_DATA/.config/autostart` приложение пишет само
+  при первом запуске (04); `--install-autostart` для snap-сборки убираем.
 - Листинг: `LurkNotes`, категория `Utility`, homepage — GitHub-репозиторий,
   контакт `aytpaev@gmail.com`.
 - Human-only шаги (аккаунт, Publisher Agreement, регистрация имени, финальный
@@ -31,6 +32,8 @@ LurkNotes 0.1.0 опубликован в Snap Store в канале `stable`: �
   сборку, тест на чистой Ubuntu 24.04, тексты листинга, отправку и `stable`.
 
 ## Decisions so far
+
+- [Research: автозапуск снапа](issues/04-research-autostart.md): `apps.<name>.autostart` — только basename; snapd ищет файл в `$SNAP_USER_DATA/.config/autostart`, который приложение пишет само при первом запуске; `--autostart` передаётся только если явно указан в `Exec=`.
 
 ## Not yet specified
 
