@@ -1,8 +1,7 @@
 # Research: снап-рецепт для PyGObject/GTK4
 
 Type: research
-Status: claimed
-Claim: research in progress on research/snapcraft-runtime
+Status: resolved
 Blocked by:
 
 Research branch: `research/snapcraft-runtime` (findings: `.scratch/snap-store/research/01-snapcraft-runtime.md`)
@@ -25,3 +24,33 @@ ubuntu/gnome-sdk, snapd):
 - какие инструменты нужны на машине сборки (LXD/Multipass/destructive mode).
 
 Ответ — отчёт с ссылками на первоисточники и готовым кандидатом конфига.
+
+## Answer
+
+Resolved by research on branch `research/snapcraft-runtime`; full report:
+<https://github.com/hoter/lurknotes/blob/research/snapcraft-runtime/.scratch/snap-store/research/01-snapcraft-runtime.md>
+
+- `base: core24` + `extensions: [gnome]` is sufficient. The extension pulls
+  `gnome-46-2404` (GTK/PyGObject/typelibs), `mesa-2404` (GPU and X11 libs),
+  `gtk-common-themes`, `desktop-launch` and the build SDK; no GTK/PyGObject
+  `stage-packages` are needed.
+- core24 ships Python 3.12.3 but no `gi`; `gnome-46-2404` rev 177 provides
+  GTK **4.20.4**, PyGObject **3.56.2** and `Gtk-4.0`/`GdkX11-4.0` typelibs.
+  This is newer than the host GTK 4.14.5 the app is tested against.
+- **libX11 is not in core24 or gnome-46-2404.** It comes from `mesa-2404` via the
+  `gpu-2404` content plug, whose wrapper adds its lib dir to `LD_LIBRARY_PATH`;
+  X11 support therefore depends on `gpu-2404` being connected.
+- The `python` plugin is optional: the base interpreter works, and `gi` comes via
+  the content snap's `PYTHONPATH`. A `dump` + wrapper is a viable no-PyPI path.
+- `command: bin/lurknotes`; `desktop:` must point inside prime, so a small `dump`
+  part stages `packaging/lurknotes.desktop`; top-level `icon:` lands as
+  `meta/gui/icon.svg` and Snapcraft rewrites `Icon=`.
+- Set `DISABLE_WAYLAND=1` + `GDK_BACKEND=x11` in the snap environment: the
+  `desktop-launch` wrapper otherwise forces Wayland (the app also sets it in
+  `__main__` before importing GTK).
+- The candidate config passes the Snapcraft JSON schema and
+  `snapcraft expand-extensions`; a real `snapcraft pack`, strict install and
+  Store review were not possible here (no snapcraft/LXD, sudo needs a password).
+- Build tooling: Snapcraft 9.x + LXD 6.x, Multipass, or destructive mode/VM.
+  GTK 4.20 vs 4.14 and the independently updating content snap are the main
+  compatibility risks to verify in the test plan (12).

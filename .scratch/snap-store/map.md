@@ -34,13 +34,16 @@ LurkNotes 0.1.0 опубликован в Snap Store в канале `stable`: �
 ## Decisions so far
 
 - [Research: автозапуск снапа](issues/04-research-autostart.md): `apps.<name>.autostart` — только basename; snapd ищет файл в `$SNAP_USER_DATA/.config/autostart`, который приложение пишет само при первом запуске; `--autostart` передаётся только если явно указан в `Exec=`.
+- [Research: снап-рецепт для PyGObject/GTK4](issues/01-research-snapcraft-runtime.md): `core24` + `[gnome]` даёт GTK 4.20/PyGObject; libX11 приходит из `mesa-2404` через `gpu-2404`; `python` plugin опционален; нужен `DISABLE_WAYLAND=1`/`GDK_BACKEND=x11`.
+
+- [Research: автозапуск снапа](issues/04-research-autostart.md): `apps.<name>.autostart` — только basename; snapd ищет файл в `$SNAP_USER_DATA/.config/autostart`, который приложение пишет само при первом запуске; `--autostart` передаётся только если явно указан в `Exec=`.
 
 ## Not yet specified
 
 - Если `strict` + X11 не воспроизведёт поведение «у края поверх окон» —
   решить, просить ли classic (отдельное ревью) или менять механизм окна.
-- Где собирать snap (локальный LXD/Multipass или одноразовая VM) — станет ясно
-  после исследования требований `snapcraft`.
+- Окружение сборки/тестов: Snapcraft 9.x + LXD/Multipass, destructive mode или
+  одноразовая VM; конкретный выбор — в 12 (тест-план).
 - Ожидания по данным существующих пользователей GitHub/deb: миграция или
   отдельное хранилище snap (зависит от 03 и 10).
 - Нужен ли snap-сборке отдельный application id/D-Bus name, чтобы не
