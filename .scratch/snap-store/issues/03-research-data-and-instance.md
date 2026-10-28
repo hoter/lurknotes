@@ -1,7 +1,8 @@
 # Research: данные и единый экземпляр в снапе
 
 Type: research
-Status: open
+Status: claimed
+Claim: research in progress on research/data-and-instance
 Blocked by:
 
 Research branch: `research/data-and-instance` (findings: `.scratch/snap-store/research/03-data-and-instance.md`)

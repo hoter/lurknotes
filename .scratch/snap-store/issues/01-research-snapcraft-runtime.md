@@ -1,7 +1,8 @@
 # Research: снап-рецепт для PyGObject/GTK4
 
 Type: research
-Status: open
+Status: claimed
+Claim: research in progress on research/snapcraft-runtime
 Blocked by:
 
 Research branch: `research/snapcraft-runtime` (findings: `.scratch/snap-store/research/01-snapcraft-runtime.md`)

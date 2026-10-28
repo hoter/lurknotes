@@ -1,7 +1,8 @@
 # Research: публикация и ревью в Snap Store
 
 Type: research
-Status: open
+Status: claimed
+Claim: research in progress on research/store-review
 Blocked by:
 
 Research branch: `research/store-review` (findings: `.scratch/snap-store/research/05-store-review.md`)

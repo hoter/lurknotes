@@ -1,7 +1,8 @@
 # Research: X11/EWMH внутри strict-снапа
 
 Type: research
-Status: open
+Status: claimed
+Claim: research in progress on research/x11-under-strict
 Blocked by:
 
 Research branch: `research/x11-under-strict` (findings: `.scratch/snap-store/research/02-x11-under-strict.md`)

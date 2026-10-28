@@ -1,7 +1,8 @@
 # Research: автозапуск снапа
 
 Type: research
-Status: open
+Status: claimed
+Claim: research in progress on research/autostart
 Blocked by:
 
 Research branch: `research/autostart` (findings: `.scratch/snap-store/research/04-autostart.md`)

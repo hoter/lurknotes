@@ -1,7 +1,8 @@
 # Grilling: листинг в Snap Store
 
 Type: grilling
-Status: open
+Status: claimed
+Claim: claimed by wayfinder session, HITL listing round
 Blocked by:
 
 ## Question
