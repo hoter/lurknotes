@@ -23,6 +23,11 @@
   `desktop-file-validate`; snap переписывает её при сборке.
 - `LICENSE` (MIT), `.gitignore` для `parts/ stage/ prime/ *.snap`.
 - `lurknotes --install-autostart` пишет файл под текущим id (snap ставит свой).
+- **Ассеты листинга** в `packaging/store/`, генерируются
+  `.venv/bin/python scripts/store_assets.py` из `docs/screenshots/`:
+  `icon.png` 512×512, `banner.png` 1920×1080, `screenshot-{1..6}.png`
+  1600×900 с подписями. Загружаются в Store вручную (Listing → Appearance):
+  иконку, до шести скриншотов по порядку номеров, баннер.
 
 ## Шаги
 
@@ -53,6 +58,8 @@
      из `gnome-46-2404` (на хосте GTK 4.14.5); не fatal, интерфейс корректен.
 7. **Edge.** `snapcraft upload --release=edge ./lurknotes_0.1.0_amd64.snap`;
    дождаться ручного ревью (Store → Listing → опубликовать листинг).
+   Загрузка 2026-11-04: ревизия 1, `will need manual review` из-за
+   `dbus`-слота; в `edge` не выехала, пока ревью не одобрят.
 8. **Stable.** После проверки: `snapcraft promote lurknotes --from-channel edge --to-channel stable`
    (или `snapcraft release lurknotes <rev> stable`).
 
