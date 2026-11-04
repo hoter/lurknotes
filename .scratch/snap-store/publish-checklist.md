@@ -25,9 +25,10 @@
 - `lurknotes --install-autostart` пишет файл под текущим id (snap ставит свой).
 - **Ассеты листинга** в `packaging/store/`, генерируются
   `.venv/bin/python scripts/store_assets.py` из `docs/screenshots/`:
-  `icon.png` 512×512, `banner.png` 1920×1080, `screenshot-{1..6}.png`
-  1600×900 с подписями. Загружаются в Store вручную (Listing → Appearance):
-  иконку, до шести скриншотов по порядку номеров, баннер.
+  `icon.png` 512×512, `banner.png` 1920×640 (Store требует ровно 3:1),
+  `screenshot-{1..6}.png` 1600×900 с подписями. Скрипт сам проверяет
+  пропорции баннера и иконки. Загружаются в Store вручную (Listing →
+  Appearance): иконку, до шести скриншотов по порядку номеров, баннер.
 
 ## Шаги
 

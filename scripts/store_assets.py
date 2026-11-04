@@ -2,7 +2,7 @@
 """Build the Snap Store listing images into ``packaging/store/``.
 
 The Store wants 16:9 screenshots (1600x900), a square app icon and an
-optional 1920x1080 featured banner. The README screenshots in
+optional featured banner, which must be 3:1 (1920x640). The README screenshots in
 ``docs/screenshots/`` are portrait captures of the real windows, so each one is
 placed on a dark card with a caption instead of being uploaded as-is.
 
@@ -17,7 +17,7 @@ Usage::
 Output::
 
     packaging/store/icon.png              512x512
-    packaging/store/banner.png            1920x1080
+    packaging/store/banner.png            1920x640
     packaging/store/screenshot-{1..6}.png 1600x900
 """
 
@@ -42,7 +42,8 @@ FONT_DIR = Path("/usr/share/fonts/truetype/dejavu")
 # The window captures are 380-390 x 928. A card keeps them readable while the
 # caption occupies the rest of the 16:9 frame.
 CARD = (1600, 900)
-BANNER = (1920, 1080)
+# The Store rejects a banner that is not 3:1.
+BANNER = (1920, 640)
 ICON = 512
 
 BACKGROUND = (24, 24, 28)
@@ -214,56 +215,48 @@ def banner() -> Path:
     canvas = background(BANNER)
     width, height = BANNER
 
-    # The deck sits on the right; the copy column on the left stays well
-    # above the bottom third, where store fronts overlay their own chrome.
-    max_height = height - 300
+    # A 3:1 strip leaves ~560 px of height after margins, so the deck fills
+    # the right side edge to edge and the copy moves into a single column.
+    max_height = height - 64
     scale = min(2.0, max_height / window.height)
     scaled = window.resize(
         (round(window.width * scale), round(window.height * scale)),
         Image.LANCZOS,
     )
-    x = width - scaled.width - 170
-    y = (height - scaled.height) // 2 - 30
-    box = (x - 16, y - 16, x + scaled.width + 16, y + scaled.height + 16)
-    rounded_shadow(canvas, box, radius=26, blur=34)
+    x = width - scaled.width - 120
+    y = (height - scaled.height) // 2
+    box = (x - 12, y - 12, x + scaled.width + 12, y + scaled.height + 12)
+    rounded_shadow(canvas, box, radius=18, blur=22)
     draw = ImageDraw.Draw(canvas)
-    draw.rounded_rectangle(box, radius=26, fill=(43, 43, 53))
+    draw.rounded_rectangle(box, radius=18, fill=(43, 43, 53))
     canvas.paste(scaled, (x, y))
 
-    # Keep the copy inside the left column so it never runs under the deck.
+    # Copy stays left of the deck so the columns never touch.
     draw = ImageDraw.Draw(canvas)
-    draw.text((150, 236), "LurkNotes", font=font(104, bold=True), fill=TEXT)
-    draw.line([(156, 388), (376, 388)], fill=ACCENT, width=6)
+    draw.text((110, 150), "LurkNotes", font=font(84, bold=True), fill=TEXT)
+    draw.line([(116, 262), (296, 262)], fill=ACCENT, width=5)
     draw.text(
-        (156, 430),
-        "Your notes, kept at the edge",
-        font=font(38),
+        (116, 296),
+        "Your notes, kept at the edge of the screen",
+        font=font(30),
         fill=MUTED,
     )
     draw.text(
-        (156, 482),
-        "of the screen",
-        font=font(38),
-        fill=MUTED,
+        (116, 352),
+        "Hover to unfold, peek without opening, search as you type.",
+        font=font(24),
+        fill=(200, 200, 212),
+    )
+    draw.text(
+        (116, 392),
+        "Local only: one JSON file, a backup, no account, no network.",
+        font=font(24),
+        fill=(200, 200, 212),
     )
 
-    body = [
-        "Hover to unfold,",
-        "peek without opening,",
-        "search as you type.",
-        "",
-        "Local only: one JSON file,",
-        "a backup, no account,",
-        "no network.",
-    ]
-    y_text = 560
-    for line in body:
-        if line:
-            draw.text((156, y_text), line, font=font(27), fill=(200, 200, 212))
-        y_text += 38
-
-    if y_text > height - 240:  # pragma: no cover - layout guard
-        raise SystemExit("banner copy runs into the bottom third; shorten it")
+    # Nothing below 430 px: the Store may overlay its own chrome there.
+    if x < 110 + 720:  # pragma: no cover - layout guard
+        raise SystemExit("banner copy collides with the deck; shorten the lines")
 
     return _save(canvas, OUT / "banner.png")
 
@@ -333,6 +326,14 @@ def main() -> int:
     banner()
     for index, (name, title, subtitle) in enumerate(SCREENSHOTS, start=1):
         screenshot_card(SHOTS / name, title, subtitle, index)
+
+    for path, ratio in ((OUT / "banner.png", 3.0), (OUT / "icon.png", 1.0)):
+        with Image.open(path) as image:
+            got = image.width / image.height
+        if abs(got - ratio) > 0.01:
+            raise SystemExit(
+                f"{path.name} has aspect ratio {got:.3f}, the Store needs {ratio:.1f}"
+            )
     return 0
 
 
