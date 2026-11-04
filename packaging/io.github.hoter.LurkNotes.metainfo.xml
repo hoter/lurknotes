@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata for the snap. Snapcraft copies title, summary, description,
+  license, contact, website, source-code and issues from this file through
+  `adopt-info`, and maps apps.lurknotes.common-id to `launchable`.
+
+  The id is the snap application id (LURKNOTES_APP_ID), not the deb/pipx id:
+  the two builds own different D-Bus names so they can coexist (research 03).
+-->
+<component type="desktop-application">
+  <id>io.github.hoter.LurkNotes</id>
+  <name>LurkNotes</name>
+  <summary>Notes deck at the edge of the screen for Ubuntu / GNOME</summary>
+  <project_license>MIT</project_license>
+  <metadata_license>CC0-1.0</metadata_license>
+
+  <description>
+    <p>
+      LurkNotes keeps your notes on a narrow strip at the right edge of the
+      screen — out of the way until you need them.
+    </p>
+    <p>
+      Hover the strip to unfold a fan of notes. Hover a tab to peek at its first
+      lines, click to open the editor. Drag tabs to reorder the deck; edits
+      autosave after 400 ms. Search filters the deck as you type, and deleting a
+      note leaves a 10-second undo.
+    </p>
+    <p>
+      Everything is stored locally in a single JSON file, with a backup and
+      recovery for a damaged file. No account, no network, no telemetry.
+    </p>
+    <p>
+      LurkNotes is a GTK4 application for Ubuntu 24.04 / GNOME 46. It runs as an
+      X11 client under XWayland, which is what lets the deck stay above other
+      windows, outside the dock and on every workspace. There is no native
+      Wayland mode; an X11/XWayland session is required.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">dev.lurknotes.LurkNotes.desktop</launchable>
+  <icon type="stock">lurknotes</icon>
+
+  <url type="homepage">https://github.com/hoter/lurknotes</url>
+  <url type="bugtracker">https://github.com/hoter/lurknotes/issues</url>
+  <url type="vcs-browser">https://github.com/hoter/lurknotes</url>
+
+  <update_contact>aytpaev@gmail.com</update_contact>
+  <developer id="io.github.hoter">
+    <name>Erlan Aytpaev</name>
+  </developer>
+
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>notes</keyword>
+    <keyword>note</keyword>
+    <keyword>deck</keyword>
+    <keyword>edge</keyword>
+  </keywords>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-10-28"/>
+  </releases>
+
+  <!--
+    Snap-specific AppStream extensions. Without these tags Snapcraft marks the
+    snap as not being intended for the Snap Store and the listing is hidden.
+  -->
+  <custom>
+    <value key="requires-control-in-metainfo">true</value>
+    <value key="requires-snap-format-in-metainfo">true</value>
+  </custom>
+</component>

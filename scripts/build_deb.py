@@ -54,7 +54,7 @@ def main() -> int:
 
     (share / "applications").mkdir(parents=True)
     shutil.copy2(
-        ROOT / "packaging" / "lurknotes.desktop",
+        ROOT / "packaging" / "dev.lurknotes.LurkNotes.desktop",
         share / "applications" / "dev.lurknotes.LurkNotes.desktop",
     )
     icon_dir = share / "icons" / "hicolor" / "scalable" / "apps"

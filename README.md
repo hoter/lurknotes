@@ -27,7 +27,18 @@ data, real X11 windows), so they can be refreshed after UI changes.
 
 ## Install
 
-LurkNotes uses GTK 4 and PyGObject from the system, so install those first
+**Snap** (Ubuntu 24.04, recommended):
+
+```sh
+sudo snap install lurknotes
+```
+
+The snap carries its own GTK 4 and PyGObject, so nothing has to be installed
+first. It keeps notes in `~/snap/lurknotes/current/.local/share/lurknotes/` and
+has its own application id (`io.github.hoter.LurkNotes`), so it can be installed
+next to the deb or pipx builds without touching their notes.
+
+**From source, pipx and deb** need GTK 4 and PyGObject from the system
 (Ubuntu 24.04):
 
 ```sh

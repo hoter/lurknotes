@@ -5,3 +5,8 @@ __pycache__/
 .pytest_cache/
 dist/
 build/
+# snapcraft lifecycle
+parts/
+stage/
+prime/
+*.snap

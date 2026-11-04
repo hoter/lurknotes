@@ -1,0 +1,121 @@
+# Snap Store build of LurkNotes (research 01/03, listing 07).
+#
+# Strict confinement on core24 with the GNOME extension: the content snaps
+# provide GTK 4 and PyGObject, core24 provides Python 3.12, and the app keeps
+# its X11 behaviour under XWayland. The snap has its own application id so it
+# can coexist with the deb/pipx builds; notes live in $SNAP_USER_DATA.
+#
+#   snapcraft pack                    build the .snap locally
+#   sudo snap install --dangerous ./lurknotes_*.snap
+#   snap run lurknotes
+#
+# Metadata (title, summary, description, license, contact, links) is adopted
+# from packaging/io.github.hoter.LurkNotes.metainfo.xml, so the Store listing
+# and the package cannot drift apart.
+
+name: lurknotes
+base: core24
+version: "0.1.0"
+# title, summary, description, license, contact and links come from the
+# AppStream file in parse-info below.
+adopt-info: lurknotes
+
+license: MIT
+contact: aytpaev@gmail.com
+website: https://github.com/hoter/lurknotes
+source-code: https://github.com/hoter/lurknotes
+issues: https://github.com/hoter/lurknotes/issues
+icon: packaging/lurknotes.svg
+
+# `grade: stable` is required to publish into candidate/stable; the first
+# revision still goes to edge and is promoted after the test plan (ticket 11).
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+
+apps:
+  lurknotes:
+    command: bin/lurknotes
+    extensions: [gnome]
+    desktop: usr/share/applications/dev.lurknotes.LurkNotes.desktop
+    common-id: io.github.hoter.LurkNotes
+    slots:
+      # Gtk.Application owns this session bus name; a strict snap without a
+      # dbus slot gets AccessDenied at startup (research 03). The name is
+      # namespaced by the snap, so only the snap build uses it.
+      - dbus-lurknotes
+    environment:
+      # The snap build owns its own D-Bus name (research 03); lurkn.app and
+      # lurkn.autostart both read this variable.
+      LURKNOTES_APP_ID: io.github.hoter.LurkNotes
+      # desktop-launch would otherwise force Wayland; the app itself also
+      # sets GDK_BACKEND=x11 before importing GTK.
+      DISABLE_WAYLAND: "1"
+      GDK_BACKEND: "x11"
+
+slots:
+  dbus-lurknotes:
+    interface: dbus
+    bus: session
+    name: io.github.hoter.LurkNotes
+
+parts:
+  lurknotes:
+    plugin: nil
+    source: src/lurkn
+    build-packages:
+      - python3
+    # The part stages $SNAP/site-packages/lurkn by hand: the python plugin
+    # would copy the whole project (including the local .venv, whose
+    # bin/python3 is an absolute symlink, which fails in the build VM).
+    override-build: |
+      install -d "$CRAFT_PART_INSTALL/bin" \
+                 "$CRAFT_PART_INSTALL/site-packages" \
+                 "$CRAFT_PART_INSTALL/usr/share/doc/lurknotes"
+      cp -a "$CRAFT_PART_SRC" "$CRAFT_PART_INSTALL/site-packages/lurkn"
+      find "$CRAFT_PART_INSTALL/site-packages" -name '__pycache__' -prune -exec rm -rf {} + || true
+      find "$CRAFT_PART_INSTALL/site-packages" -name '*.pyc' -delete || true
+      cat > "$CRAFT_PART_INSTALL/bin/lurknotes" <<'EOF'
+      #!/usr/bin/python3
+      import sys
+      sys.path.insert(0, "/snap/lurknotes/current/site-packages")
+      from lurkn.__main__ import main
+      raise SystemExit(main())
+      EOF
+      chmod 0755 "$CRAFT_PART_INSTALL/bin/lurknotes"
+      install -Dm644 "$CRAFT_PROJECT_DIR/LICENSE" "$CRAFT_PART_INSTALL/usr/share/doc/lurknotes/LICENSE"
+      install -Dm644 "$CRAFT_PROJECT_DIR/README.md" "$CRAFT_PART_INSTALL/usr/share/doc/lurknotes/README.md"
+      # parse-info is resolved against the part's source/build/install trees,
+      # so the AppStream file is copied into each of them (snapcraft emits no
+      # warning when the lookup misses and adopt-info then leaves
+      # summary/description empty).
+      install -d "$CRAFT_PART_SRC/packaging" "$CRAFT_PART_BUILD/packaging"
+      cp "$CRAFT_PROJECT_DIR/packaging/io.github.hoter.LurkNotes.metainfo.xml" "$CRAFT_PART_SRC/packaging/"
+      cp "$CRAFT_PROJECT_DIR/packaging/io.github.hoter.LurkNotes.metainfo.xml" "$CRAFT_PART_BUILD/packaging/"
+      install -Dm644 "$CRAFT_PROJECT_DIR/packaging/io.github.hoter.LurkNotes.metainfo.xml" \
+        "$CRAFT_PART_INSTALL/usr/share/metainfo/io.github.hoter.LurkNotes.metainfo.xml"
+    parse-info:
+      - packaging/io.github.hoter.LurkNotes.metainfo.xml
+
+  desktop-assets:
+    plugin: dump
+    source: packaging
+    # Writes the whole install layout itself rather than relying on
+    # `organize`: the desktop file is renamed to the snap id, and an
+    # override-build bypasses the dump script that organize relies on.
+    override-build: |
+      install -d "$CRAFT_PART_INSTALL/usr/share/applications" \
+                 "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/scalable/apps" \
+                 "$CRAFT_PART_INSTALL/usr/share/metainfo"
+      sed \
+        -e 's|^Name=.*|Name=LurkNotes|' \
+        -e 's|^Icon=.*|Icon=lurknotes|' \
+        -e 's|^Exec=.*|Exec=lurknotes|' \
+        "$CRAFT_PART_SRC/dev.lurknotes.LurkNotes.desktop" \
+        > "$CRAFT_PART_INSTALL/usr/share/applications/dev.lurknotes.LurkNotes.desktop"
+      cp "$CRAFT_PART_SRC/lurknotes.svg" \
+        "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/scalable/apps/lurknotes.svg"
+      cp "$CRAFT_PART_SRC/io.github.hoter.LurkNotes.metainfo.xml" \
+        "$CRAFT_PART_INSTALL/usr/share/metainfo/io.github.hoter.LurkNotes.metainfo.xml"

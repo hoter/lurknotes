@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 from lurkn.autostart import (
@@ -84,6 +86,62 @@ def test_the_placeholder_app_id_can_be_overridden_for_tests(tmp_path: Path) -> N
     )
 
     assert written.name == "dev.lurknotes.LurkNotes.test.desktop"
+
+
+def test_the_snap_override_comes_from_the_environment(tmp_path: Path) -> None:
+    # The snap sets LURKNOTES_APP_ID so its D-Bus name, desktop id and
+    # autostart entry cannot collide with the deb/pipx build (research 03).
+    script = (
+        "from pathlib import Path\n"
+        "from lurkn import autostart\n"
+        "print(autostart.APPLICATION_ID)\n"
+        "print(autostart.desktop_path(Path('cfg')).name)\n"
+    )
+    environment = {
+        "LURKNOTES_APP_ID": "io.github.hoter.LurkNotes",
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+    }
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, **environment},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert completed.stdout.splitlines() == [
+        "io.github.hoter.LurkNotes",
+        "io.github.hoter.LurkNotes.desktop",
+    ]
+
+
+def test_the_default_app_id_is_used_without_the_override(tmp_path: Path) -> None:
+    script = (
+        "from pathlib import Path\n"
+        "from lurkn import autostart\n"
+        "print(autostart.APPLICATION_ID)\n"
+        "print(autostart.desktop_path(Path('cfg')).name)\n"
+    )
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key != "LURKNOTES_APP_ID"
+    }
+    environment["PYTHONPATH"] = str(
+        Path(__file__).resolve().parents[1] / "src"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert completed.stdout.splitlines() == [
+        "dev.lurknotes.LurkNotes",
+        "dev.lurknotes.LurkNotes.desktop",
+    ]
 
 
 def test_launcher_path_prefers_an_existing_argv0_script(tmp_path: Path) -> None:

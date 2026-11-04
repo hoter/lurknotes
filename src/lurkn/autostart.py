@@ -4,6 +4,11 @@ GNOME session reads ``$XDG_CONFIG_HOME/autostart/<application-id>.desktop``.
 The Exec line must be absolute (a login session has no source checkout on
 ``PATH``) and carries ``--autostart`` so the app maps the strip only and never
 requests focus.
+
+``LURKNOTES_APP_ID``
+    Override the application id, the same variable :mod:`lurkn.app` honours.
+    The snap build uses ``io.github.hoter.LurkNotes`` so its D-Bus name and
+    autostart entry cannot collide with the deb/pipx build.
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ import shutil
 import sys
 from pathlib import Path
 
-APPLICATION_ID = "dev.lurknotes.LurkNotes"
+APPLICATION_ID = os.environ.get("LURKNOTES_APP_ID") or "dev.lurknotes.LurkNotes"
 NAME = "LurkNotes"
 COMMENT = "Notes deck at the edge of the screen"
 
