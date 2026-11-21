@@ -10,3 +10,6 @@ parts/
 stage/
 prime/
 *.snap
+web/
+# IDE project files
+.idea/
