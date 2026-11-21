@@ -360,6 +360,11 @@ class LurkNotesApp(Gtk.Application):
             # Read-only files and unconfirmed corrupt files must never be
             # written by debounce, close, or shutdown.
             return False
+        # Every save path funnels through here, so this is the one place that
+        # must take the editor's text first. Without it a debounce firing
+        # mid-sentence wrote — and synced — the earlier, shorter text, which is
+        # exactly how a user's typing vanished.
+        self._adopt_buffer_text()
         try:
             self.store.save(self.notes)
         except (OverwriteBlocked, ReadOnlyError) as exc:
@@ -489,6 +494,29 @@ class LurkNotesApp(Gtk.Application):
         self._show_sync_state(
             "needs_attention" if result.state == NEEDS_ATTENTION else self._sync_config.state()
         )
+
+    def _adopt_buffer_text(self) -> bool:
+        """Copy the open note's editor text into the note before saving.
+
+        The editor is the source of truth while a note is open: a debounce can
+        fire in the middle of a sentence, and taking ``note.text`` then writes
+        a prefix of what the user typed — and, with sync on, pushes that prefix
+        to the server. Returns True when the note changed.
+        """
+        current = self.current_id
+        panel = self.panel
+        if current is None or panel is None:
+            return False
+        note = find_note(self.notes, current)
+        text_method = getattr(getattr(panel, "note", None), "text", None)
+        if note is None or not callable(text_method):
+            return False
+        text = text_method()
+        if text == note.text:
+            return False
+        note.text = text
+        note.updated = time.time()
+        return True
 
     def _renumber_positions(self) -> None:
         """Keep ``position`` equal to the array index once sync is in play.
