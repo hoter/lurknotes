@@ -200,6 +200,11 @@ class LurkNotesApp(Gtk.Application):
         self.set_accels_for_action("app.quit", ["<Control>q"])
         # Smoke-only control channel, env-gated in lurkn.testhooks.
         self._hooks.install_control_action()
+        # Opt-in diagnostics: `kill -USR1 <pid>` writes the buffer, the saved
+        # text and the file's contents side by side (lurkn.sigdump).
+        from . import sigdump
+
+        sigdump.install(self)
         self._load_notes()
         self._start_sync()
         self._show_sync_state(self._sync_config.state())
