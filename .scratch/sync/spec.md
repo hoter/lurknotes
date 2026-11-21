@@ -60,9 +60,15 @@ GTK 4) и сервер (GitLab `hoter/lurknotes`, Laravel 13). По этой с�
 | `client_id` | `string(36)` | UUID4, который выдал клиент. |
 | `text` | text | Текст заметки, `\n` между строками. |
 | `position` | integer | Порядок в колоде; меньше — выше. |
-| `created_at` | timestamp | Когда создана на клиенте. |
-| `server_updated_at` | timestamp(6) | Серверная метка версии; источник истины для конфликтов. |
+| `created_at_client` | timestamp, nullable | Когда создана на клиенте (только для отображения). |
+| `server_updated_at` | timestamp(6), nullable | Серверная метка версии; источник истины для конфликтов. |
 | `deleted_at` | timestamp, nullable | Tombstone: NULL — заметка жива. |
+
+`server_updated_at` в миграции **nullable**, а не `useCurrent()`: в SQLite нет
+`DEFAULT CURRENT_TIMESTAMP(6)`, и колоночный default молча обрезал бы версию до
+секунд. Значение выставляет `saving`-хук модели. Модель при этом обязана
+сериализовать даты с микросекундами (`$dateFormat = 'Y-m-d H:i:s.u'`), иначе
+Laravel запишет `now()`, усечённый по формату по умолчанию.
 
 Индексы:
 
@@ -98,8 +104,7 @@ GTK 4) и сервер (GitLab `hoter/lurknotes`, Laravel 13). По этой с�
 - `server_updated_at` — iso8601 с микросекундами, `null` для никогда не
   отправленной заметки.
 - `synced` — `false`, если заметка есть в очереди; UI может показать, что
-  изменение не ушло, но по умолчанию не показывает.
-- **Миграция при чтении** (спека v1 §5.1): файл без `position` читается как
+  изменение не ушло, но по умолчанию не показывает.- **Миграция при чтении** (спека v1 §5.1): файл без `position` читается как
   есть, порядок берётся из индекса и сразу переписывается в `position`.
   `version` остаётся `1`.
 
@@ -200,7 +205,7 @@ POST /api/sync/changes
 ### 4.3 Pull: получение изменений
 
 ```
-GET /api/sync/changes?since=<iso8601>&limit=500
+GET /api/sync/changes?since=<iso8601>&after=<row id>&limit=500
 ```
 
 Ответ:
@@ -218,6 +223,7 @@ GET /api/sync/changes?since=<iso8601>&limit=500
     }
   ],
   "cursor": "2026-11-21T09:15:01.002331Z",
+  "after": 412,
   "has_more": false
 }
 ```
@@ -225,10 +231,12 @@ GET /api/sync/changes?since=<iso8601>&limit=500
 - `since` — курсор из `sync.json`; без него отдаётся всё.
 - **Tombstones отдаются тоже** — запрос идёт через `withTrashed()`, чтобы
   клиент различал «удалено» и «не получено».
-- `limit` по умолчанию 500; `has_more: true` означает, что нужно повторить с
-  новым курсором.
-- Курсор — `server_updated_at` последней отданной записи; сравнение строго
-  `>` (порядок гарантирован монотонностью).
+- `limit` по умолчанию 500, максимум 500; больше — `422`.
+- `has_more: true` означает, что нужно повторить с **обоими** значениями из
+  ответа: `since=cursor&after=after`. Пары `(server_updated_at, id)` задают
+  полный порядок, поэтому страница никогда не повторяет свою последнюю
+  строку, даже если несколько заметок менялись в одну микросекунду.
+  Один `since` для этого недостаточен — такой дефект был найден тестом.
 
 ### 4.4 Веб-UI
 
@@ -368,7 +376,7 @@ $table->string('client_id', 36);
 $table->text('text')->nullable();
 $table->integer('position')->default(0);
 $table->timestamp('created_at_client')->nullable();
-$table->timestamp('server_updated_at', precision: 6)->useCurrent();
+$table->timestamp('server_updated_at', precision: 6)->nullable();
 $table->softDeletesTz();
 $table->unique(['user_id', 'client_id']);
 $table->index(['user_id', 'server_updated_at']);
@@ -376,7 +384,11 @@ $table->index(['user_id', 'server_updated_at']);
 
 `created_at`/`updated_at` Laravel не используются для синхронизации: время
 создания заметки приходит с клиента (`created_at_client`), а версия — это
-`server_updated_at`.
+`server_updated_at`. В модели оба выключены (`CREATED_AT = null`,
+`UPDATED_AT = null`).
+
+Чистка надгробий — `MassPrunable` с `prunable()`: `onlyTrashed()` и
+`deleted_at <= now() - 30 дней`, планировщик вызывает `model:prune`.
 
 ### 7.3 Применение изменений
 
