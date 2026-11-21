@@ -57,6 +57,7 @@ from .notes import (
     index_of,
     session_untouched_note,
 )
+from .deletion import PendingRemoval, should_announce
 from .onboarding import mark_onboarded, needs_onboarding
 from .retry import Retrier
 from .syncsettings import SyncSettings
@@ -142,6 +143,7 @@ class LurkNotesApp(Gtk.Application):
         # startup, and the controller (plus every network module) is built
         # lazily once an enabled configuration is found (sync spec §6.1).
         self._sync_controller = None
+        self._pending_removal: PendingRemoval | None = None
         settings = SyncSettings()
         self._sync_config = settings.load()
         # The in-deck row only appears once sync is in play; a deck that never
@@ -315,6 +317,7 @@ class LurkNotesApp(Gtk.Application):
         # note is already absent from the file, so dropping the payload here
         # is the whole finalisation.
         self._undo.finalize()
+        self._flush_pending_removal()
         self._flush_current()
         removed = discard_all_untouched(self.notes, self.session_ids)
         self.current_id = None
@@ -1184,6 +1187,11 @@ class LurkNotesApp(Gtk.Application):
 
         self.notes.remove(note)
         self.current_id = None
+        # The tombstone waits for the undo window to close: a deletion the user
+        # then cancels must not reach other machines.
+        self._pending_removal = PendingRemoval(
+            note=note, base=getattr(note, "server_updated_at", None)
+        )
         self._save_notes()
         self.deck_changed()
         self._undo.start(
@@ -1214,6 +1222,29 @@ class LurkNotesApp(Gtk.Application):
             self._hooks.schedule_dump()
         return True
 
+    def _announce_removal(self) -> None:
+        """The undo window closed: queue the tombstone, if there is a server row.
+
+        Also called before shutdown and when another delete supersedes the
+        pending one, so a deletion never gets dropped on the floor.
+        """
+        removal = getattr(self, "_pending_removal", None)
+        if removal is None:
+            return
+        self._pending_removal = None
+        controller = self._sync_controller
+        syncer = getattr(controller, "syncer", None)
+        if syncer is None or not should_announce(removal):
+            return
+        syncer.enqueue_delete(note_id=removal.note.id, base=removal.base)
+        sync_now = getattr(controller, "sync_now", None)
+        if callable(sync_now):
+            sync_now()
+
+    def _flush_pending_removal(self) -> None:
+        """Shutdown: a deletion that outlived its toast still has to travel."""
+        self._announce_removal()
+
     def undo_delete(self) -> bool:
         """Ctrl+Z / Undo: put the pending note back and reopen it.
 
@@ -1224,6 +1255,8 @@ class LurkNotesApp(Gtk.Application):
         deleted = self._undo.take()
         if deleted is None:
             return False
+        # The user changed their mind: nothing may travel to the server.
+        self._pending_removal = None
         if self.panel is not None:
             self.panel.hide_toast()
 
@@ -1239,6 +1272,7 @@ class LurkNotesApp(Gtk.Application):
         return True
 
     def _on_undo_expired(self) -> None:
+        self._announce_removal()
         if self.panel is not None:
             self.panel.hide_toast()
         # Nothing is pinning the fan any more. If the pointer is already
