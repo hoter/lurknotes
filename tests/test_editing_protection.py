@@ -74,3 +74,36 @@ def test_an_open_note_that_left_the_deck_protects_nothing() -> None:
     app = make_app(note_text="x", buffer_text="y", current="gone")
 
     assert app._editing_protection() == set()
+
+
+def test_a_note_with_a_queued_change_is_protected_even_when_closed() -> None:
+    """The user's case: close the note, the pull arrives while it is closed.
+
+    `current_id` is None by then, so protecting only the open note left the
+    just-typed text exposed to a pull carrying the older server copy.
+    """
+    from lurkn.queue import PendingChange, Queue
+
+    class FakeSyncer:
+        def __init__(self, queue):
+            self.queue = queue
+
+    class FakeController:
+        def __init__(self, queue):
+            self.syncer = FakeSyncer(queue)
+
+    queue = Queue()
+    queue.enqueue(
+        PendingChange(id="a", text="typed", position=0, created=1.0)
+    )
+    app = make_app(note_text="x", buffer_text="x", current=None)
+    app._sync_controller = FakeController(queue)
+
+    assert app._editing_protection() == {"a"}
+
+
+def test_no_queue_no_controller_protects_nothing() -> None:
+    app = make_app(note_text="x", buffer_text="x", current=None)
+    app._sync_controller = None
+
+    assert app._editing_protection() == set()

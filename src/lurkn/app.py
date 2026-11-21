@@ -433,33 +433,46 @@ class LurkNotesApp(Gtk.Application):
         return bool(config is not None and config.enabled and config.token)
 
     def _editing_protection(self) -> set[str]:
-        """The open note, when it has something to lose.
+        """Notes a pull must not overwrite right now.
 
-        A pull arrives right after the push it confirms, so the server's copy
-        of a note is always older than the editor's contents. Protecting the
-        id stops the merge from reverting what the user is mid-way through
-        typing (sync spec §5).
+        Two cases, and both matter:
 
-        The comparison is against the saved note, **not** against
-        ``synced``/``server_updated_at``: those track the last confirmed
-        version, and a note that was just pushed carries a fresh one while the
-        editor still holds newer text. An open note always wins over a pull.
+        * **The open note**, while its buffer differs from the saved text.
+          A pull lands right after the push it confirms, so the server's copy
+          is older than what the user has typed.
+        * **A note saved moments ago whose push is still in flight.** Closing
+          the note sets ``current_id`` to None, and a pull arriving then would
+          otherwise drop the just-typed text back to the server's version.
+
+        The comparison is against the saved text, not against ``synced``: a
+        just-pushed note carries a fresh version while the editor holds newer
+        text. An unsent local edit always wins over a pull.
         """
+        protected: set[str] = set()
+
         current = self.current_id
         panel = self.panel
-        if current is None or panel is None:
-            return set()
-        buffer_text = getattr(getattr(panel, "note", None), "text", None)
-        if buffer_text is None:
-            return set()
-        note = find_note(self.notes, current)
-        if note is None:
-            return set()
-        try:
-            edited = buffer_text() != note.text
-        except TypeError:  # pragma: no cover - a stand-in without callables
-            return {current}
-        return {current} if edited else set()
+        if current is not None and panel is not None:
+            buffer_text = getattr(getattr(panel, "note", None), "text", None)
+            note = find_note(self.notes, current)
+            if callable(buffer_text) and note is not None:
+                try:
+                    if buffer_text() != note.text:
+                        protected.add(current)
+                except TypeError:  # pragma: no cover - stand-in without callables
+                    protected.add(current)
+
+        # Notes with a change queued are the user's, whatever the server says.
+        controller = getattr(self, "_sync_controller", None)
+        syncer = getattr(controller, "syncer", None)
+        queue = getattr(syncer, "queue", None)
+        if queue is not None:
+            try:
+                protected.update(change.id for change in queue.load())
+            except Exception:  # pragma: no cover - a broken queue is not fatal
+                pass
+
+        return protected
 
     def _on_sync_result(self, result) -> None:
         """A pass finished: store versions, merge pulls, then update the UI."""
