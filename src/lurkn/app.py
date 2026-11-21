@@ -422,6 +422,35 @@ class LurkNotesApp(Gtk.Application):
         config = getattr(self, "_sync_config", None)
         return bool(config is not None and config.enabled and config.token)
 
+    def _editing_protection(self) -> set[str]:
+        """The open note, when it has something to lose.
+
+        A pull arrives right after the push it confirms, so the server's copy
+        of a note is always older than the editor's contents. Protecting the
+        id stops the merge from reverting what the user is mid-way through
+        typing (sync spec §5).
+
+        The comparison is against the saved note, **not** against
+        ``synced``/``server_updated_at``: those track the last confirmed
+        version, and a note that was just pushed carries a fresh one while the
+        editor still holds newer text. An open note always wins over a pull.
+        """
+        current = self.current_id
+        panel = self.panel
+        if current is None or panel is None:
+            return set()
+        buffer_text = getattr(getattr(panel, "note", None), "text", None)
+        if buffer_text is None:
+            return set()
+        note = find_note(self.notes, current)
+        if note is None:
+            return set()
+        try:
+            edited = buffer_text() != note.text
+        except TypeError:  # pragma: no cover - a stand-in without callables
+            return {current}
+        return {current} if edited else set()
+
     def _on_sync_result(self, result) -> None:
         """A pass finished: store versions, merge pulls, then update the UI."""
         from .merge import merge_pulled
@@ -432,7 +461,9 @@ class LurkNotesApp(Gtk.Application):
         apply_rejected(self.notes, result.rejected_changes)
 
         if result.changes:
-            merged, pulled = merge_pulled(self.notes, result.changes)
+            merged, pulled = merge_pulled(
+                self.notes, result.changes, protected=self._editing_protection()
+            )
             if pulled:
                 from .merge import sort_by_position
 

@@ -27,12 +27,19 @@ def merge_pulled(
     changes: list[dict],
     *,
     now: float | None = None,
+    protected: set[str] | None = None,
 ) -> tuple[list[Note], bool]:
     """Apply wire changes to ``local``; return the deck and whether it moved.
 
     Order is preserved: an updated note keeps its array slot, a new note is
     appended, and the caller re-sorts by ``position`` if the deck syncs.
+
+    ``protected`` names notes the merge must not touch, whatever the server
+    says. A pull lands right after a push, and the server's copy of a note is
+    then older than what the user has typed into it; overwriting it loses the
+    edit, which is exactly the bug that reached a user.
     """
+    protected = protected or set()
     stamp = time.time() if now is None else now
     by_id = {note.id: note for note in local}
     result = list(local)
@@ -45,6 +52,10 @@ def merge_pulled(
         deleted = bool(change.get("deleted", False))
         existing = by_id.get(note_id)
         version = change.get("server_updated_at") or None
+
+        if note_id in protected:
+            # The editor holds text the server has not seen; the queue owns it.
+            continue
 
         if deleted:
             if existing is None:
