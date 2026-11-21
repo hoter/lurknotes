@@ -398,8 +398,12 @@ class LurkNotesApp(Gtk.Application):
         from .syncer import Syncer
         from .syncui import SyncController
 
+        queue = Queue()
+        # One Syncer, shared with the controller: it owns the queue that
+        # `_on_local_save` fills, so building two of them would enqueue into a
+        # queue the sending loop never reads.
         controller = SyncController(
-            Syncer(SyncSettings(), Queue()),
+            Syncer(SyncSettings(), queue),
             on_result=self._on_sync_result,
             schedule=GLib.timeout_add,
             cancel=GLib.source_remove,
@@ -445,7 +449,7 @@ class LurkNotesApp(Gtk.Application):
             return
         syncer = controller.syncer
         for note in self.notes:
-            if getattr(note, "synced", True):
+            if not note.needs_push:
                 continue
             syncer.enqueue_note(
                 note_id=note.id,

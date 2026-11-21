@@ -254,3 +254,29 @@ def test_pending_change_rejects_a_non_object(tmp_path: Path) -> None:
 
     assert queue.load() == []
     assert isinstance(queue.last_error, QueueError)
+
+
+def test_a_null_position_in_the_queue_does_not_poison_the_list(tmp_path: Path) -> None:
+    # The queue writes `position: null` for a note with no sort order yet, and
+    # int(None) used to make the whole file unreadable — every change vanished
+    # even though the bytes were on disk.
+    path = tmp_path / "queue.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "changes": [
+                    {"id": "a", "text": "x", "position": None, "created": None, "base": None},
+                    {"id": "b", "text": "y", "position": 3, "created": 1.0, "base": None},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    queue = Queue(path)
+
+    loaded = queue.load()
+
+    assert queue.last_error is None
+    assert [item.id for item in loaded] == ["a", "b"]
+    assert loaded[0].position == 0

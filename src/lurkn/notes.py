@@ -40,6 +40,17 @@ class Note:
     server_updated_at: str | None = None
     synced: bool = True
 
+    @property
+    def needs_push(self) -> bool:
+        """True when the server has not accepted this note's state.
+
+        Derived rather than stored: a note the server has never seen (no
+        ``server_updated_at``) always has something to push, so a deck loaded
+        from disk cannot look clean just because nobody set a flag. ``synced``
+        stays as the explicit override for a note whose edit lost a conflict.
+        """
+        return not self.synced or self.server_updated_at is None
+
     @classmethod
     def create(
         cls,

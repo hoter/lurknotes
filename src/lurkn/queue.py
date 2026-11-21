@@ -59,9 +59,12 @@ class PendingChange:
         try:
             return cls(
                 id=str(data["id"]),
-                text=str(data.get("text", "")),
-                position=int(data.get("position", 0)),
-                created=float(data.get("created", 0.0)),
+                text=str(data.get("text") or ""),
+                # Not `data.get("position", 0)`: the key is present and null
+                # when a note has no sort position yet, and int(None) would
+                # make the whole queue unreadable.
+                position=int(data.get("position") or 0),
+                created=float(data.get("created") or 0.0),
                 base=data.get("base") or None,
                 deleted=bool(data.get("deleted", False)),
             )
