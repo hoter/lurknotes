@@ -88,12 +88,24 @@ def test_the_dump_is_written_atomically(tmp_path: Path) -> None:
     assert not (tmp_path / "deck.json.tmp").exists()
 
 
-def test_a_relative_path_lands_in_the_snap_data_dir(tmp_path: Path, monkeypatch) -> None:
+def test_a_relative_path_lands_beside_the_notes_file(tmp_path: Path, monkeypatch) -> None:
+    # XDG_DATA_HOME wins, matching where notes.json lives; falling back to the
+    # bare snap home put the dump outside the write area.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("SNAP_USER_DATA", str(tmp_path / "snap"))
+
+    resolved = sigdump._resolve(Path("deck.json"))
+
+    assert resolved == tmp_path / "lurknotes" / "deck.json"
+
+
+def test_without_xdg_the_snap_data_dir_is_used(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.setenv("SNAP_USER_DATA", str(tmp_path))
 
     resolved = sigdump._resolve(Path("deck.json"))
 
-    assert resolved == tmp_path / "deck.json"
+    assert resolved == tmp_path / ".local" / "share" / "lurknotes" / "deck.json"
 
 
 def test_install_is_off_without_the_environment(tmp_path: Path, monkeypatch) -> None:

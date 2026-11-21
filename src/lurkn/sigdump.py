@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import sys
 from pathlib import Path
 
 # Default file, inside the snap's own data directory so `snap run` can write
@@ -38,10 +39,14 @@ def install(app, path: Path | str | None = None) -> Path | None:
     destination = _resolve(Path(target))
 
     def on_signal(_signum, _frame) -> None:
-        # The handler runs on the main loop's thread here (GLib installs its
-        # own signal source), but a dump is filesystem work: schedule it on
-        # the loop rather than doing it inside the handler.
-        _schedule_write(app, destination)
+        # A Python signal handler runs on the main thread between bytecodes,
+        # which for a GLib application is inside the loop — safe to do the
+        # filesystem work here. Scheduling it through GLib instead would need
+        # the loop to wake, and a process sitting idle in poll() may not.
+        try:
+            snapshot(app, destination)
+        except Exception:  # pragma: no cover - never let diagnostics kill us
+            pass
 
     try:
         signal.signal(signal.SIGUSR1, on_signal)
@@ -52,11 +57,20 @@ def install(app, path: Path | str | None = None) -> Path | None:
 
 
 def _resolve(path: Path) -> Path:
-    """Put a relative name under the snap data dir; keep absolute paths."""
+    """Put a relative name beside ``notes.json``; keep absolute paths.
+
+    ``XDG_DATA_HOME`` first, then ``SNAP_USER_DATA``: the dump must land where
+    the snap is allowed to write *and* where the user can read it, which is
+    ``~/snap/lurknotes/current/.local/share/lurknotes``. Resolving to the
+    plain home would write outside the confinement and fail silently.
+    """
     if path.is_absolute():
         return path
-    data = Path(os.environ.get("SNAP_USER_DATA") or Path.home())
-    return data / path
+    base = os.environ.get("XDG_DATA_HOME")
+    if not base:
+        snap_data = os.environ.get("SNAP_USER_DATA")
+        base = str(Path(snap_data) / ".local" / "share") if snap_data else str(Path.home())
+    return Path(base) / "lurknotes" / path
 
 
 def _schedule_write(app, destination: Path) -> None:
@@ -112,7 +126,14 @@ def snapshot(app, destination: Path) -> None:
         "buffer_text": buffer_text,
         "notes": notes,
     }
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(destination.name + ".tmp")
-    temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, destination)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(destination.name + ".tmp")
+        temporary.write_text(
+            json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        os.replace(temporary, destination)
+    except OSError as exc:
+        # Never silent: a dump that misses its path is why two rounds of
+        # diagnosis showed nothing.
+        print(f"lurknotes: cannot write deck dump {destination}: {exc}", file=sys.stderr)
