@@ -19,12 +19,26 @@ PREVIEW_LINES = 6
 
 @dataclass
 class Note:
-    """One note. Position in the deck is the note's index in the list."""
+    """One note. Position in the deck is the note's index in the list.
+
+    The last three fields belong to synchronisation (sync spec §3.2) and are
+    None/True for a deck that never enabled it, so an offline deck writes the
+    same JSON it always did:
+
+    * ``position`` — deck order once sortable; ``None`` means "use the array
+      index", which is how v1 files store order.
+    * ``server_updated_at`` — the version the server last confirmed; the base
+      for the next push.
+    * ``synced`` — False while the note has edits the server has not accepted.
+    """
 
     id: str
     text: str
     created: float
     updated: float
+    position: int | None = None
+    server_updated_at: str | None = None
+    synced: bool = True
 
     @classmethod
     def create(
@@ -61,20 +75,47 @@ class Note:
             for value in timestamps
         ):
             raise ValueError("note timestamps must be numbers")
+        position = data.get("position")
+        if position is not None and (
+            isinstance(position, bool) or not isinstance(position, int)
+        ):
+            raise ValueError("note position must be an integer or absent")
+        server_updated_at = data.get("server_updated_at")
+        if server_updated_at is not None and not isinstance(server_updated_at, str):
+            raise ValueError("server_updated_at must be a string or absent")
+        synced = data.get("synced", True)
+        if not isinstance(synced, bool):
+            raise ValueError("synced must be a boolean")
         return cls(
             id=note_id,
             text=text,
             created=float(created),
             updated=float(updated),
+            position=position,
+            server_updated_at=server_updated_at,
+            synced=synced,
         )
 
     def to_dict(self) -> dict:
-        return {
+        """The spec §5.1 shape, plus the sync fields only when they are set.
+
+        A deck that never enabled sync keeps writing exactly the four v1 keys:
+        adding ``"position": null`` to every note would change the file format
+        for people who do not use the feature.
+        """
+        document = {
             "id": self.id,
             "text": self.text,
             "created": self.created,
             "updated": self.updated,
         }
+        if self.position is not None:
+            document["position"] = self.position
+        if self.server_updated_at is not None:
+            document["server_updated_at"] = self.server_updated_at
+        if not self.synced:
+            document["synced"] = False
+        return document
 
     def title(self) -> str:
         """The first non-empty line, trimmed and capped at 60 characters.

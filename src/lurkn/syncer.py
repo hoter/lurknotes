@@ -21,7 +21,7 @@ against the fake server.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from .queue import PendingChange, Queue
@@ -43,6 +43,9 @@ class SyncResult:
     rejected: int = 0
     pulled: int = 0
     error: str = ""
+    # The raw pull, so the app can merge it into the deck. Not part of the
+    # persisted state.
+    changes: list[dict] = field(default_factory=list)
 
 
 class Syncer:
@@ -75,7 +78,8 @@ class Syncer:
         try:
             result.applied, result.rejected = self._push(client, config)
             pulled, cursor, after = self._pull(client, config)
-            result.pulled = pulled
+            result.pulled = len(pulled)
+            result.changes = pulled
             if pulled or after is not None:
                 self.settings.update(cursor=cursor)
         except AuthError as exc:
@@ -118,25 +122,25 @@ class Syncer:
 
     def _pull(
         self, client: SyncClient, config: SyncConfig
-    ) -> tuple[int, str, int | None]:
+    ) -> tuple[list[dict], str, int | None]:
         # Pages until the server says there is nothing left. `after` is needed
         # as well as `since`: a page boundary can share a timestamp.
         since = config.cursor or None
         after: int | None = None
-        total = 0
+        collected: list[dict] = []
         cursor = config.cursor
 
         while True:
             response = client.pull(config.token, since=since, after=after)
             changes = response.get("changes", []) or []
-            total += len(changes)
+            collected.extend(changes)
             cursor = response.get("cursor") or cursor
             after = response.get("after")
             if not response.get("has_more"):
                 break
             since = cursor or since
 
-        return total, cursor, after
+        return collected, cursor, after
 
     # -- helpers for the app -------------------------------------------
 

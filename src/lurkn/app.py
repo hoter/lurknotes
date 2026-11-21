@@ -411,8 +411,16 @@ class LurkNotesApp(Gtk.Application):
         return bool(self._sync_config.enabled and self._sync_config.token)
 
     def _on_sync_result(self, result) -> None:
-        """A pass finished: let the fan show it, never the editor."""
+        """A pass finished: merge what the server sent, then update the UI."""
+        from .merge import merge_pulled
         from .syncer import NEEDS_ATTENTION
+
+        if result.changes:
+            merged, changed = merge_pulled(self.notes, result.changes)
+            if changed:
+                self.notes = merged
+                self.panel.refresh_notes(self.notes, self.current_id)
+                self._save_notes()
 
         if result.state == NEEDS_ATTENTION and result.error:
             print(strings.ERROR.format(message=f"sync: {result.error}"), file=sys.stderr)
