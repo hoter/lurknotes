@@ -36,7 +36,11 @@ class Contract:
 
     def __init__(self) -> None:
         self.routes: dict[tuple[str, str], Callable[[dict], tuple[int, object]]] = {}
+        # The query string travels with each request instead of living in one
+        # shared attribute: the test server handles several requests, and a
+        # shared slot made assertions race against the handler thread.
         self.seen: list[tuple[str, str, dict | None, dict]] = []
+        self.query = ""
 
     def on(
         self,
@@ -54,7 +58,6 @@ def _handler_for(contract: Contract) -> type[BaseHTTPRequestHandler]:
             raw = self.rfile.read(length) if length else b""
             payload = json.loads(raw) if raw else None
             path = self.path.split("?", 1)[0]
-            query = self.path.split("?", 1)[1] if "?" in self.path else ""
             contract.seen.append((method, self.path, payload, dict(self.headers)))
 
             route = contract.routes.get((method, path))
@@ -69,8 +72,6 @@ def _handler_for(contract: Contract) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
             self.wfile.write(encoded)
-            # Keep the query string visible to assertions without parsing it twice.
-            contract.query = query
 
         def do_GET(self) -> None:  # noqa: N802 - http.server API
             self._serve("GET")
@@ -186,9 +187,9 @@ def test_pull_quotes_the_cursor_and_passes_after(server) -> None:
 
     SyncClient(base).pull(TOKEN, since="2026-11-21T09:15:01.002331Z", after=12)
 
-    query = contract.query
-    assert "since=2026-11-21T09%3A15%3A01.002331Z" in query
-    assert "after=12" in query
+    _method, path, _payload, _headers = contract.seen[-1]
+    assert "since=2026-11-21T09%3A15%3A01.002331Z" in path
+    assert "after=12" in path
 
 
 def test_an_unreachable_server_raises_a_transport_error() -> None:
