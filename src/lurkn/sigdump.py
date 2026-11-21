@@ -119,11 +119,32 @@ def snapshot(app, destination: Path) -> None:
             }
         )
 
+    # What the merge would protect right now, and what is queued: without this
+    # the dump cannot tell "the guard ran and failed" from "the guard was off".
+    protected = None
+    guard = getattr(app, "_editing_protection", None)
+    if callable(guard):
+        try:
+            protected = sorted(guard())
+        except Exception:  # pragma: no cover - diagnostics must not raise
+            protected = ["<error>"]
+
+    queued = None
+    controller = getattr(app, "_sync_controller", None)
+    queue = getattr(getattr(controller, "syncer", None), "queue", None)
+    if queue is not None:
+        try:
+            queued = [change.id for change in queue.load()]
+        except Exception:  # pragma: no cover
+            queued = ["<error>"]
+
     document = {
         "state": getattr(app, "state", ""),
         "current_id": current_id,
         "buffer_length": None if buffer_text is None else len(buffer_text),
         "buffer_text": buffer_text,
+        "protected": protected,
+        "queued": queued,
         "notes": notes,
     }
     try:

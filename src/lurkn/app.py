@@ -498,6 +498,11 @@ class LurkNotesApp(Gtk.Application):
             self.panel.refresh_notes(self.notes, self.current_id)
             self._save_notes()
 
+        if result.finalize is not None:
+            # Accepted versions are stored and the pull has already merged;
+            # only now is it safe to forget the queued copies.
+            result.finalize()
+
         if result.state == NEEDS_ATTENTION and result.error:
             print(strings.ERROR.format(message=f"sync: {result.error}"), file=sys.stderr)
         self._sync_config = SyncSettings().update(

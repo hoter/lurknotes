@@ -74,6 +74,9 @@ def test_a_queued_change_is_sent_and_removed_once_the_server_accepts_it(wired) -
 
     assert result.applied == 1
     assert fake.pushes == [[queue_item(NOTE, "hello", None)]]
+    # The queue keeps the entry until the app has stored the version.
+    assert [item.id for item in queue.load()] == [NOTE]
+    result.finalize()
     assert queue.load() == []
     assert settings.load().last_sync
 
@@ -110,7 +113,8 @@ def test_a_stale_change_is_dropped_and_the_pull_wins(wired) -> None:
         {"applied": [], "rejected": [{"id": NOTE, "reason": "stale"}]},
     )
 
-    syncer.run_once()
+    result = syncer.run_once()
+    result.finalize()
 
     assert queue.load() == []
 
@@ -168,7 +172,8 @@ def test_a_deletion_is_queued_as_a_tombstone(wired) -> None:
     syncer.enqueue_delete(note_id=NOTE, base=VERSION)
     fake.on_push = (200, {"applied": [{"id": NOTE, "server_updated_at": VERSION, "deleted": True}], "rejected": []})
 
-    syncer.run_once()
+    result = syncer.run_once()
+    result.finalize()
 
     assert fake.pushes[0][0]["deleted"] is True
     assert queue.load() == []
@@ -195,3 +200,37 @@ def queue_item(note_id: str, text: str, base: str | None) -> dict:
         "base": base,
         "deleted": False,
     }
+
+
+def test_the_queue_survives_the_pull_so_the_editor_is_protected(wired) -> None:
+    """The bug: push cleared the queue, the pull then saw "no local edit".
+
+    `_editing_protection` treats a queued change as proof the user's text is
+    the truth. Clearing the queue inside `_push` left the pull with nothing to
+    see, so it overwrote the note with the server's older copy.
+    """
+    syncer, _settings, queue, fake = wired
+    syncer.enqueue_note(note_id=NOTE, text="typed far more than this", position=0, created=1.0, base=None)
+    fake.on_push = (
+        200,
+        {"applied": [{"id": NOTE, "server_updated_at": VERSION, "deleted": False}], "rejected": []},
+    )
+    fake.on_pull = (
+        200,
+        {
+            "changes": [{"id": NOTE, "text": "typed", "server_updated_at": VERSION, "deleted": False}],
+            "cursor": VERSION,
+            "after": 1,
+            "has_more": False,
+        },
+    )
+
+    result = syncer.run_once()
+
+    # During the pull the entry must still be there for the guard to see.
+    assert [item.id for item in queue.load()] == [NOTE]
+    assert result.finalize is not None
+
+    result.finalize()
+
+    assert queue.load() == []

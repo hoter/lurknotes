@@ -48,6 +48,9 @@ class SyncResult:
     changes: list[dict] = field(default_factory=list)
     applied_changes: list[dict] = field(default_factory=list)
     rejected_changes: list[dict] = field(default_factory=list)
+    # Called by the app once the accepted versions are stored, so the queue
+    # outlives the pull that follows the push.
+    finalize: Callable[[], None] | None = None
 
 
 class Syncer:
@@ -83,6 +86,12 @@ class Syncer:
             result.rejected = len(rejected)
             result.applied_changes = applied
             result.rejected_changes = rejected
+            # The queue is cleared only once the caller has stored the
+            # versions; until then the entries are the proof that this note has
+            # an edit the server has not fully caught up with. Clearing them
+            # before the pull is what let a pull overwrite the editor.
+            clear = self.clear_confirmed
+            result.finalize = lambda: clear(applied, rejected)
             pulled, cursor, after = self._pull(client, config)
             result.pulled = len(pulled)
             result.changes = pulled
@@ -107,6 +116,14 @@ class Syncer:
     def _push(
         self, client: SyncClient, config: SyncConfig
     ) -> tuple[list[dict], list[dict]]:
+        """Send the queue; the caller clears it once the reply is applied.
+
+        Removing entries here looked harmless and broke the guard: the pull
+        that follows the push then found an empty queue, believed the note was
+        unedited, and overwrote the editor with the server's older copy. So
+        this method reports what was accepted and leaves the queue alone —
+        :class:`lurkn.syncer.Syncer` clears it after the versions are stored.
+        """
         changes = self.queue.load()
         if not changes:
             return [], []
@@ -115,18 +132,16 @@ class Syncer:
         applied = response.get("applied", []) or []
         rejected = response.get("rejected", []) or []
 
-        applied_ids = {entry["id"] for entry in applied if "id" in entry}
-        for entry in applied:
-            if "id" in entry:
-                self.queue.remove(entry["id"])
-
-        # A rejected change is stale: drop it, because the pull that follows
-        # returns the winning version and overwrites the local copy anyway.
-        rejected_ids = {entry["id"] for entry in rejected if "id" in entry}
-        for note_id in rejected_ids - applied_ids:
-            self.queue.remove(note_id)
-
         return list(applied), list(rejected)
+
+    def clear_confirmed(self, applied: list[dict], rejected: list[dict]) -> None:
+        """Drop accepted and stale changes once their outcome is on disk."""
+        applied_ids = {entry["id"] for entry in applied if "id" in entry}
+        rejected_ids = {entry["id"] for entry in rejected if "id" in entry}
+        # A rejected change is stale: the pull that follows returns the winning
+        # version and overwrites the local copy anyway.
+        for note_id in applied_ids | rejected_ids:
+            self.queue.remove(note_id)
 
     def _pull(
         self, client: SyncClient, config: SyncConfig
