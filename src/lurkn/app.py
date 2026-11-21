@@ -142,10 +142,13 @@ class LurkNotesApp(Gtk.Application):
         # startup, and the controller (plus every network module) is built
         # lazily once an enabled configuration is found (sync spec §6.1).
         self._sync_controller = None
-        self._sync_config = SyncSettings().load()
+        settings = SyncSettings()
+        self._sync_config = settings.load()
         # The in-deck row only appears once sync is in play; a deck that never
         # opted in keeps the fan exactly as v1 drew it (sync spec §6.4).
-        self._sync_row_visible = self._sync_config.exists
+        # Read from the settings object, not the config: `exists` answers
+        # "was this ever configured", which is a property of the file.
+        self._sync_row_visible = settings.exists
 
     @property
     def state(self) -> str:
