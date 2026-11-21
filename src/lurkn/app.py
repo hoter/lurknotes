@@ -419,7 +419,8 @@ class LurkNotesApp(Gtk.Application):
         controller.start()
 
     def _sync_enabled(self) -> bool:
-        return bool(self._sync_config.enabled and self._sync_config.token)
+        config = getattr(self, "_sync_config", None)
+        return bool(config is not None and config.enabled and config.token)
 
     def _on_sync_result(self, result) -> None:
         """A pass finished: store versions, merge pulls, then update the UI."""
@@ -433,7 +434,10 @@ class LurkNotesApp(Gtk.Application):
         if result.changes:
             merged, pulled = merge_pulled(self.notes, result.changes)
             if pulled:
-                self.notes = merged
+                from .merge import sort_by_position
+
+                self.notes = sort_by_position(merged)
+                self._renumber_positions()
                 changed = True
 
         if changed:
@@ -450,6 +454,21 @@ class LurkNotesApp(Gtk.Application):
             "needs_attention" if result.state == NEEDS_ATTENTION else self._sync_config.state()
         )
 
+    def _renumber_positions(self) -> None:
+        """Keep ``position`` equal to the array index once sync is in play.
+
+        The array is the deck's order in v1 and stays the source of truth; the
+        column exists so the server can store the same order. Renumbering on
+        every reorder is what stops a pull from sorting the deck into the
+        server's idea of the order, and it only touches notes once sync is
+        configured so an offline deck keeps writing the v1 file.
+        """
+        if not getattr(self, "_sync_row_visible", False) and not self._sync_enabled():
+            return
+        from .merge import assign_positions
+
+        assign_positions(self.notes)
+
     def _on_local_save(self) -> None:
         """A local save landed: queue every note the server has not confirmed.
 
@@ -460,6 +479,7 @@ class LurkNotesApp(Gtk.Application):
         controller = self._sync_controller
         if controller is None:
             return
+        self._renumber_positions()
         syncer = controller.syncer
         for note in self.notes:
             if not note.needs_push:
@@ -737,6 +757,7 @@ class LurkNotesApp(Gtk.Application):
 
         note = self.notes.pop(index)
         self.notes.insert(target, note)
+        self._renumber_positions()
         self._save_notes()
         self.deck_changed()
         if self.panel is not None:
