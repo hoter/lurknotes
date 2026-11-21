@@ -496,12 +496,15 @@ class LurkNotesApp(Gtk.Application):
 
         if changed:
             self.panel.refresh_notes(self.notes, self.current_id)
-            self._save_notes()
 
         if result.finalize is not None:
-            # Accepted versions are stored and the pull has already merged;
-            # only now is it safe to forget the queued copies.
+            # Forget the confirmed copies *before* saving: `_save_notes` adopts
+            # the editor text and immediately re-queues what still differs, so
+            # clearing afterwards would delete the fresh entry the guard needs.
             result.finalize()
+
+        if changed:
+            self._save_notes()
 
         if result.state == NEEDS_ATTENTION and result.error:
             print(strings.ERROR.format(message=f"sync: {result.error}"), file=sys.stderr)
@@ -564,7 +567,12 @@ class LurkNotesApp(Gtk.Application):
         self._renumber_positions()
         syncer = controller.syncer
         for note in self.notes:
-            if not note.needs_push:
+            # `needs_push` alone misses the note the user is typing in: the
+            # reply to the previous push can arrive mid-sentence and set
+            # `synced`, while the buffer already holds more. The open note is
+            # always re-queued after a save — that entry is what stops the next
+            # pull from reverting it.
+            if not note.needs_push and note.id != self.current_id:
                 continue
             syncer.enqueue_note(
                 note_id=note.id,
