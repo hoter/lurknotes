@@ -41,12 +41,14 @@ class FanPage(Gtk.Box):
         on_reorder: Callable[[str, int], None],
         on_quit: Callable[[], None],
         on_search_focus: Callable[[], None],
+        on_sync_settings: Callable[[], None] | None = None,
         on_scrolled: Callable[[], None] | None = None,
         on_drag_begin: Callable[[str], None] | None = None,
         on_drag_update: Callable[[], None] | None = None,
         on_drag_end: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        on_sync_settings = on_sync_settings or (lambda: None)
         self._on_open = on_open
         self._on_new = on_new
         self._on_collapse = on_collapse
@@ -144,8 +146,30 @@ class FanPage(Gtk.Box):
         hint.set_ellipsize(Pango.EllipsizeMode.END)
         hint.add_css_class("hint")
         self.hint = hint
+
+        # Sync row (sync spec §6.4): state on the left, the action on the
+        # right. It is built always and hidden by the app when sync is not
+        # configured, so the fan's layout does not shift at startup.
+        sync_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        sync_row.add_css_class("sync-row")
+        self.sync_dot = Gtk.Label(label="●")
+        self.sync_dot.add_css_class("sync-dot")
+        self.sync_label = Gtk.Label(label=strings.SYNC_ROW_OFF)
+        self.sync_label.set_xalign(0)
+        self.sync_label.set_hexpand(True)
+        self.sync_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.sync_label.add_css_class("hint")
+        self.sync_action = Gtk.Button(label=strings.SYNC_SET_UP)
+        self.sync_action.add_css_class("sync-action")
+        self.sync_action.connect("clicked", lambda _button: on_sync_settings())
+        sync_row.append(self.sync_dot)
+        sync_row.append(self.sync_label)
+        sync_row.append(self.sync_action)
+        self.sync_row = sync_row
+
         header.append(bar)
         header.append(self.search)
+        header.append(sync_row)
         header.append(hint)
         self.append(header)
 
@@ -187,6 +211,30 @@ class FanPage(Gtk.Box):
         )
         peek_scroll.connect("scroll", self._on_peek_scroll)
         self.peek_pane.add_controller(peek_scroll)
+
+    def set_sync_state(self, state: str, *, visible: bool = True) -> None:
+        """Paint the row and the status dot; ``state`` is a sync constant.
+
+        ``off`` shows the invitation, ``paused`` and ``on`` the truth, and
+        ``needs_attention`` turns both the dot and the label into the warning
+        colour so a dead token is visible without opening the settings page.
+        """
+        self.sync_row.set_visible(visible)
+        if state == "on":
+            label, action, css = strings.SYNC_ROW_ON, strings.SYNC_SET_UP, "sync-on"
+        elif state == "paused":
+            label, action, css = strings.SYNC_ROW_PAUSED, strings.SYNC_SET_UP, "sync-off"
+        elif state == "needs_attention":
+            label, action, css = strings.SYNC_ROW_ATTENTION, strings.SYNC_SIGN_IN, "sync-attention"
+        else:
+            label, action, css = strings.SYNC_ROW_OFF, strings.SYNC_SET_UP, "sync-off"
+        self.sync_label.set_text(label)
+        self.sync_action.set_label(action)
+        for name in ("sync-on", "sync-off", "sync-attention"):
+            self.sync_dot.remove_css_class(name)
+            self.sync_label.remove_css_class(name)
+        self.sync_dot.add_css_class(css)
+        self.sync_label.add_css_class(css)
 
     def set_notes(self, notes: Sequence[Note]) -> None:
         """Rebuild the tabs from *notes* — unless a drag is in flight.

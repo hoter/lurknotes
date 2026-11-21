@@ -143,6 +143,9 @@ class LurkNotesApp(Gtk.Application):
         # lazily once an enabled configuration is found (sync spec §6.1).
         self._sync_controller = None
         self._sync_config = SyncSettings().load()
+        # The in-deck row only appears once sync is in play; a deck that never
+        # opted in keeps the fan exactly as v1 drew it (sync spec §6.4).
+        self._sync_row_visible = self._sync_config.exists
 
     @property
     def state(self) -> str:
@@ -196,6 +199,7 @@ class LurkNotesApp(Gtk.Application):
         self._hooks.install_control_action()
         self._load_notes()
         self._start_sync()
+        self._show_sync_state(self._sync_config.state())
 
     def do_command_line(self, command_line: Gio.ApplicationCommandLine) -> int:
         """Handle every invocation, cold or warm (spec §9.3).
@@ -435,7 +439,13 @@ class LurkNotesApp(Gtk.Application):
 
         if result.state == NEEDS_ATTENTION and result.error:
             print(strings.ERROR.format(message=f"sync: {result.error}"), file=sys.stderr)
-        self._show_sync_state(result.state)
+        self._sync_config = SyncSettings().update(
+            ui_state=result.state if result.state == NEEDS_ATTENTION else ""
+        )
+        self._sync_row_visible = True
+        self._show_sync_state(
+            "needs_attention" if result.state == NEEDS_ATTENTION else self._sync_config.state()
+        )
 
     def _on_local_save(self) -> None:
         """A local save landed: queue every note the server has not confirmed.
@@ -460,10 +470,94 @@ class LurkNotesApp(Gtk.Application):
             )
         controller.sync_now()
 
+    # -- sync settings page -------------------------------------------
+
+    def open_sync_settings(self) -> None:
+        """Show the Sync page in the panel and paint its current state."""
+        controller = getattr(self, "panel", None)
+        if controller is None:
+            return
+        self.panel.show_sync()
+        self._refresh_sync_page()
+
+    def _refresh_sync_page(self) -> None:
+        config = self._sync_config
+        state = config.state()
+        if state == "on" and config.ui_state == "needs_attention":
+            state = "needs_attention"
+        self.panel.sync_page.show_state(
+            state=state,
+            email=config.email,
+            server=config.server,
+            last_sync=config.last_sync,
+        )
+        self._show_sync_state(state)
+
+    def toggle_sync(self, enabled: bool) -> None:
+        """The switch: pause keeps the token, enabling needs one."""
+        if enabled and not self._sync_config.token:
+            # A switch with no account cannot do anything; send the user to the
+            # form instead of silently flipping back.
+            self._refresh_sync_page()
+            return
+        self._sync_config = SyncSettings().update(enabled=enabled)
+        if enabled:
+            if self._sync_controller is None:
+                self._start_sync()
+            else:
+                self._sync_controller.sync_now()
+        elif self._sync_controller is not None:
+            self._sync_controller.stop()
+            self._sync_controller = None
+        self._refresh_sync_page()
+
+    def sign_in_sync(self, server: str, email: str, password: str) -> bool:
+        """Log in from the page; False is shown to the user by the page."""
+        from .queue import Queue
+        from .syncer import Syncer
+
+        if not server or not email or not password:
+            return False
+        # The network work is only importable/instantiable once the user has
+        # asked for sync, which is exactly here.
+        from .syncui import SyncController
+
+        syncer = Syncer(SyncSettings(), Queue())
+        try:
+            self._sync_config = syncer.sign_in(
+                server=server, email=email, password=password
+            )
+        except Exception as exc:
+            print(strings.ERROR.format(message=f"sync: {exc}"), file=sys.stderr)
+            return False
+
+        if self._sync_controller is not None:
+            self._sync_controller.stop()
+        self._sync_controller = SyncController(
+            syncer,
+            on_result=self._on_sync_result,
+            schedule=GLib.timeout_add,
+            cancel=GLib.source_remove,
+        )
+        self._sync_controller.start()
+        self._refresh_sync_page()
+        return True
+
+    def sign_out_sync(self) -> None:
+        from .queue import Queue
+        from .syncer import Syncer
+
+        if self._sync_controller is not None:
+            self._sync_controller.stop()
+            self._sync_controller = None
+        Syncer(SyncSettings(), Queue()).sign_out()
+        self._sync_config = SyncSettings().load()
+        self._refresh_sync_page()
+
     def _show_sync_state(self, state: str) -> None:
-        setter = getattr(self.panel, "show_sync_state", None)
-        if setter is not None:
-            setter(state)
+        fan = getattr(getattr(self.panel, "fan", None), "set_sync_state", None)
+        if fan is not None:
+            fan(state, visible=self._sync_row_visible)
 
     # -- deck ----------------------------------------------------------
 
@@ -486,6 +580,10 @@ class LurkNotesApp(Gtk.Application):
             on_quit=self._on_quit,
             on_search_focus=self._grant_search_focus,
             on_search_changed=lambda: self._hooks.schedule_dump(delay=30),
+            on_sync_settings=self.open_sync_settings,
+            on_sync_toggle=self.toggle_sync,
+            on_sync_sign_in=self.sign_in_sync,
+            on_sync_sign_out=self.sign_out_sync,
             on_hover_tab=self._on_tab_enter,
             on_leave_tab=self._on_tab_leave,
             on_scrolled=lambda: self._hooks.schedule_dump(delay=30),

@@ -13,6 +13,7 @@ from ..ui.focus_hint import FocusHint
 from ..ui.note import NotePage
 from ..ui.onboarding import OnboardingHint
 from ..ui.status import KIND_ERROR, StatusBanner
+from ..ui.sync_page import SyncPage
 from ..ui.toast import UndoToast
 
 WIDTH = 380
@@ -34,6 +35,10 @@ class PanelWindow(Gtk.Window):
         on_quit: Callable[[], None],
         on_search_focus: Callable[[], bool],
         on_search_changed: Callable[[], None],
+        on_sync_settings: Callable[[], None],
+        on_sync_toggle: Callable[[bool], None],
+        on_sync_sign_in: Callable[[str, str, str], bool],
+        on_sync_sign_out: Callable[[], None],
         on_hover_tab: Callable[[str], None],
         on_leave_tab: Callable[[str], None],
         on_scrolled: Callable[[], None],
@@ -64,6 +69,7 @@ class PanelWindow(Gtk.Window):
             on_collapse=on_collapse,
             on_quit=on_quit,
             on_search_focus=lambda: on_search_focus(),
+            on_sync_settings=on_sync_settings,
             on_hover_tab=on_hover_tab,
             on_leave_tab=on_leave_tab,
             on_reorder=on_reorder,
@@ -81,7 +87,15 @@ class PanelWindow(Gtk.Window):
         self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
         self.stack.add_named(self.fan, "fan")
         self.stack.add_named(self.note, "note")
+        self.sync_page = SyncPage(
+            on_back=lambda: self.show_fan(self._last_notes),
+            on_toggle=on_sync_toggle,
+            on_sign_in=on_sync_sign_in,
+            on_sign_out=on_sync_sign_out,
+        )
+        self.stack.add_named(self.sync_page, "sync")
         self.stack.set_visible_child_name("fan")
+        self._last_notes: Sequence[Note] = ()
 
         # The status banner sits above both pages: recovery warnings and
         # "Save failed" must be visible in the fan and in the editor.
@@ -120,8 +134,14 @@ class PanelWindow(Gtk.Window):
 
     def show_fan(self, notes: Sequence[Note]) -> None:
         self.set_title(strings.FAN_TITLE)
+        self._last_notes = list(notes)
         self.fan.set_notes(notes)
         self.stack.set_visible_child_name("fan")
+
+    def show_sync(self) -> None:
+        """The Sync page, opened from the fan row (sync spec §6.4)."""
+        self.set_title(strings.FAN_TITLE)
+        self.stack.set_visible_child_name("sync")
 
     def show_note(self, note: Note, notes: Sequence[Note]) -> None:
         self.set_title(strings.NOTE_TITLE)
@@ -134,6 +154,7 @@ class PanelWindow(Gtk.Window):
         self.note.load(note)
 
     def refresh_notes(self, notes: Sequence[Note], active_id: str | None) -> None:
+        self._last_notes = list(notes)
         self.fan.set_notes(notes)
         self.note.set_notes(notes, active_id)
 

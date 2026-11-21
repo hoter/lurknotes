@@ -347,3 +347,35 @@ tooltip label {
 .lurk .undo-toast button {
   padding: 2px 10px;
 }
+
+/* Sync row in the fan (sync spec §6.4): state on the left, action on the
+   right. Colours are new; they are not in the v1 palette. */
+.lurk .sync-row {
+  padding: 4px 6px;
+  border-radius: 6px;
+  background-color: #2b2b35;
+}
+
+.lurk .sync-dot {
+  font-size: 0.7em;
+}
+
+.lurk .sync-off {
+  color: #6f6f7e;
+}
+
+.lurk .sync-on {
+  color: #7bb489;
+}
+
+.lurk .sync-attention {
+  color: #c98a6b;
+}
+
+.lurk .sync-action {
+  padding: 2px 8px;
+}
+
+.lurk .sync-page {
+  padding: 10px;
+}

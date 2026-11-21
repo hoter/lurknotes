@@ -51,6 +51,10 @@ class SyncConfig:
     token: str = ""
     cursor: str = ""
     last_sync: str = ""
+    # The last sync the UI knows about: STATE_ON or STATE_ATTENTION. Kept
+    # here so a restart does not forget that the token was refused.
+    # Named `ui_state` because `state()` is the derived answer.
+    ui_state: str = ""
 
     def state(self) -> str:
         """Which of the three persisted states the settings describe."""
@@ -69,6 +73,7 @@ class SyncConfig:
             "token": self.token,
             "cursor": self.cursor,
             "last_sync": self.last_sync,
+            "ui_state": self.ui_state,
         }
 
     @classmethod
@@ -79,7 +84,9 @@ class SyncConfig:
         if version != VERSION:
             raise SyncConfigError(f"{path} has unsupported version {version!r}")
         values = {}
-        for key in ("enabled", "server", "email", "token", "cursor", "last_sync"):
+        for key in (
+            "enabled", "server", "email", "token", "cursor", "last_sync", "ui_state"
+        ):
             value = data.get(key, cls.__dataclass_fields__[key].default)
             if key == "enabled" and not isinstance(value, bool):
                 raise SyncConfigError(f"{path} has a non-boolean 'enabled'")
@@ -87,6 +94,12 @@ class SyncConfig:
                 raise SyncConfigError(f"{path} has a non-string {key!r}")
             values[key] = value
         return cls(**values)
+
+
+STATE_OFF = "off"
+STATE_PAUSED = "paused"
+STATE_ON = "on"
+STATE_ATTENTION = "needs_attention"
 
 
 def default_path(data_dir: Path | str | None = None) -> Path:
