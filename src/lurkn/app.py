@@ -59,6 +59,7 @@ from .notes import (
 )
 from .onboarding import mark_onboarded, needs_onboarding
 from .retry import Retrier
+from .syncsettings import SyncSettings
 from .store import (
     LoadResult,
     OverwriteBlocked,
@@ -137,6 +138,11 @@ class LurkNotesApp(Gtk.Application):
         # Ticket 09: first-launch onboarding and the 150 ms focus decision.
         self._onboarding_pending = needs_onboarding()
         self._focus_guard: FocusGuard | None = None
+        # Sync is off until the user opts in: only the settings file is read at
+        # startup, and the controller (plus every network module) is built
+        # lazily once an enabled configuration is found (sync spec §6.1).
+        self._sync_controller = None
+        self._sync_config = SyncSettings().load()
 
     @property
     def state(self) -> str:
@@ -189,6 +195,7 @@ class LurkNotesApp(Gtk.Application):
         # Smoke-only control channel, env-gated in lurkn.testhooks.
         self._hooks.install_control_action()
         self._load_notes()
+        self._start_sync()
 
     def do_command_line(self, command_line: Gio.ApplicationCommandLine) -> int:
         """Handle every invocation, cold or warm (spec §9.3).
@@ -358,17 +365,86 @@ class LurkNotesApp(Gtk.Application):
             self._retrier.failed()
             self._hooks.schedule_dump()
             return False
-        self.unsaved = False
+        self._unsaved = False
         if self.panel is not None:
             self.panel.show_save_failed(False)
         self._retrier.succeeded()
         self._hooks.schedule_dump()
+        self._on_local_save()
         return True
 
     def _retry_save(self) -> None:
         # The retrier schedules only while ``unsaved`` is true; a successful
         # attempt clears it, a failing one schedules the next backoff.
         self._save_notes()
+
+    # -- sync ----------------------------------------------------------
+
+    def _start_sync(self) -> None:
+        """Bring the sync loop up if, and only if, the user enabled it.
+
+        The imports live inside this method on purpose: with sync off, none of
+        ``lurkn.syncer``, ``syncui`` or ``syncclient`` is loaded, so the
+        acceptance check that asserts "no network sockets" keeps passing.
+        ``syncsettings`` and ``queue`` are pure file readers and may be loaded
+        eagerly.
+        """
+        if self._sync_controller is not None:
+            return
+        if not self._sync_enabled():
+            return
+
+        from .queue import Queue
+        from .syncer import Syncer
+        from .syncui import SyncController
+
+        controller = SyncController(
+            Syncer(SyncSettings(), Queue()),
+            on_result=self._on_sync_result,
+            schedule=GLib.timeout_add,
+            cancel=GLib.source_remove,
+        )
+        self._sync_controller = controller
+        controller.start()
+
+    def _sync_enabled(self) -> bool:
+        return bool(self._sync_config.enabled and self._sync_config.token)
+
+    def _on_sync_result(self, result) -> None:
+        """A pass finished: let the fan show it, never the editor."""
+        from .syncer import NEEDS_ATTENTION
+
+        if result.state == NEEDS_ATTENTION and result.error:
+            print(strings.ERROR.format(message=f"sync: {result.error}"), file=sys.stderr)
+        self._show_sync_state(result.state)
+
+    def _on_local_save(self) -> None:
+        """A local save landed: queue every note the server has not confirmed.
+
+        Comparing by ``synced`` keeps this cheap and, more importantly,
+        idempotent: a note already waiting in the queue is replaced with its
+        latest state rather than queued twice.
+        """
+        controller = self._sync_controller
+        if controller is None:
+            return
+        syncer = controller.syncer
+        for note in self.notes:
+            if getattr(note, "synced", True):
+                continue
+            syncer.enqueue_note(
+                note_id=note.id,
+                text=note.text,
+                position=getattr(note, "position", 0),
+                created=note.created,
+                base=getattr(note, "server_updated_at", None),
+            )
+        controller.sync_now()
+
+    def _show_sync_state(self, state: str) -> None:
+        setter = getattr(self.panel, "show_sync_state", None)
+        if setter is not None:
+            setter(state)
 
     # -- deck ----------------------------------------------------------
 

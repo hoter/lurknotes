@@ -151,6 +151,9 @@ def make_app(
     app.deck.state = STATE_FAN
     app.save_source = 0
     app.unsaved = False
+    # Sync is off in every fake app: `make_app` never opts in, and the tests
+    # that care about sync drive Syncer directly.
+    app._sync_controller = None
     app.read_only = read_only
     app.overwrite_blocked = overwrite_blocked
     app.panel = FakePanel()

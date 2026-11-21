@@ -46,6 +46,10 @@ apps:
       # dbus slot gets AccessDenied at startup (research 03). The name is
       # namespaced by the snap, so only the snap build uses it.
       - dbus-lurknotes
+    # Sync talks to the user's own server; the gnome extension does not add
+    # this plug (research 06). With sync off the app opens no sockets at all.
+    plugs:
+      - network
     environment:
       # The snap build owns its own D-Bus name (research 03); lurkn.app and
       # lurkn.autostart both read this variable.
