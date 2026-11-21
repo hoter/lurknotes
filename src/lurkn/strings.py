@@ -60,11 +60,24 @@ STATUS_CONTINUE = "Continue"
 STATUS_DISMISS = "Dismiss status"
 QUIT = "Quit LurkNotes"
 
+SYNC_SIGNED_IN = "lurknotes: sync enabled for {email} on {server}"
+SYNC_SIGNED_OUT = "lurknotes: sync disabled; the device token was removed"
+SYNC_STATUS_ON = "lurknotes: sync on for {email} ({server}); last sync {last}"
+SYNC_STATUS_OFF = "lurknotes: sync is off"
+SYNC_STATUS_PAUSED = "lurknotes: sync paused for {email}"
+SYNC_FAILED = "lurknotes: sync failed: {message}"
+SYNC_USAGE = (
+    "usage: lurknotes sync login --server URL --email EMAIL --password-stdin | "
+    "lurknotes sync logout | lurknotes sync status"
+)
+
 VERSION = "lurknotes {version}"
 USAGE = (
     "usage: lurknotes [new] | lurknotes --autostart | "
     "lurknotes --install-autostart | lurknotes --help | "
-    "lurknotes --version"
+    "lurknotes --version\n"
+    "       lurknotes sync login --server URL --email EMAIL --password-stdin\n"
+    "       lurknotes sync logout | lurknotes sync status"
 )
 CLI_UNKNOWN_COMMAND = "lurknotes: unknown command {argument!r}; " + USAGE
 CLI_UNKNOWN_OPTION = "lurknotes: unknown option {argument!r}; " + USAGE

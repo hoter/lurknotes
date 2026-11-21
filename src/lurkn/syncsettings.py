@@ -141,7 +141,7 @@ class SyncSettings:
 
     # -- writing -------------------------------------------------------
 
-    def save(self, config: SyncConfig) -> None:
+    def save(self, config: SyncConfig) -> SyncConfig:
         atomic_write(
             self.path,
             json.dumps(config.to_dict(), ensure_ascii=False, indent=2) + "\n",
@@ -150,6 +150,7 @@ class SyncSettings:
         self._config = config
         self._loaded = True
         self.last_error = None
+        return config
 
     def update(self, **changes: object) -> SyncConfig:
         """Save a copy of the current settings with ``changes`` applied."""

@@ -21,6 +21,14 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["GDK_BACKEND"] = "x11"
 
     args = list(sys.argv[1:] if argv is None else argv)
+
+    # `sync …` never opens a display: signing in is the same work whether or
+    # not a session is running, and a headless box must be able to do it.
+    if args and args[0] == "sync":
+        from . import synccmd
+
+        return synccmd.run(args[1:])
+
     try:
         command = parse(args)
     except CliError as exc:

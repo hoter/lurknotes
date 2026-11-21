@@ -43,9 +43,11 @@ class SyncResult:
     rejected: int = 0
     pulled: int = 0
     error: str = ""
-    # The raw pull, so the app can merge it into the deck. Not part of the
-    # persisted state.
+    # The raw wire data, so the app can update versions and merge the deck.
+    # Not part of any persisted state.
     changes: list[dict] = field(default_factory=list)
+    applied_changes: list[dict] = field(default_factory=list)
+    rejected_changes: list[dict] = field(default_factory=list)
 
 
 class Syncer:
@@ -76,7 +78,11 @@ class Syncer:
         result = SyncResult(state=IDLE)
 
         try:
-            result.applied, result.rejected = self._push(client, config)
+            applied, rejected = self._push(client, config)
+            result.applied = len(applied)
+            result.rejected = len(rejected)
+            result.applied_changes = applied
+            result.rejected_changes = rejected
             pulled, cursor, after = self._pull(client, config)
             result.pulled = len(pulled)
             result.changes = pulled
@@ -98,10 +104,12 @@ class Syncer:
 
     # -- steps ---------------------------------------------------------
 
-    def _push(self, client: SyncClient, config: SyncConfig) -> tuple[int, int]:
+    def _push(
+        self, client: SyncClient, config: SyncConfig
+    ) -> tuple[list[dict], list[dict]]:
         changes = self.queue.load()
         if not changes:
-            return 0, 0
+            return [], []
 
         response = client.push(config.token, [item.to_dict() for item in changes])
         applied = response.get("applied", []) or []
@@ -118,7 +126,7 @@ class Syncer:
         for note_id in rejected_ids - applied_ids:
             self.queue.remove(note_id)
 
-        return len(applied), len(rejected)
+        return list(applied), list(rejected)
 
     def _pull(
         self, client: SyncClient, config: SyncConfig
